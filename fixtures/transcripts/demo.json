@@ -1,0 +1,322 @@
+{
+  "messages": [
+    {
+      "id": "d0000000",
+      "review_id": "demo",
+      "round": 0,
+      "agent": "system",
+      "kind": "diff",
+      "position": null,
+      "confidence": null,
+      "claims": [],
+      "references": [],
+      "text": "diff --git a/requirements.txt b/requirements.txt\nindex 3f1c2a4..8b7e9d1 100644\n--- a/requirements.txt\n+++ b/requirements.txt\n@@ -1,5 +1,6 @@\n fastapi==0.110.0\n uvicorn==0.29.0\n pydantic==2.6.4\n requests==2.31.0\n PyYAML==6.0.1\n+orjson==3.10.0\ndiff --git a/app/webhooks.py b/app/webhooks.py\nindex 9a7d3e2..c41f0b8 100644\n--- a/app/webhooks.py\n+++ b/app/webhooks.py\n@@ -1,20 +1,21 @@\n import hashlib\n import hmac\n-import json\n import os\n\n+import orjson\n+\n WEBHOOK_SECRET = os.environ[\"WEBHOOK_SECRET\"].encode()\n\n\n-def verify_signature(body: str, signature: str) -> bool:\n-    expected = hmac.new(WEBHOOK_SECRET, body.encode(), hashlib.sha256).hexdigest()\n-    return hmac.compare_digest(expected, signature)\n+def verify_signature(body: bytes, signature: str) -> bool:\n+    expected = hmac.new(WEBHOOK_SECRET, body, hashlib.sha256).hexdigest()\n+    return expected == signature\n\n\n-def parse_payload(body: str) -> dict:\n+def parse_payload(body: bytes) -> dict:\n     \"\"\"Parse a webhook payload from the request body.\"\"\"\n-    return json.loads(body)\n+    return orjson.loads(body)\n\n\n def event_type(payload: dict) -> str:\n     return payload.get(\"action\", \"unknown\")\ndiff --git a/app/routes.py b/app/routes.py\nindex 5e2b7a1..0d93f4c 100644\n--- a/app/routes.py\n+++ b/app/routes.py\n@@ -8,10 +8,10 @@ router = APIRouter()\n\n @router.post(\"/webhooks/github\")\n async def github_webhook(request: Request):\n-    body = (await request.body()).decode()\n+    body = await request.body()\n     signature = request.headers.get(\"X-Hub-Signature-256\", \"\").removeprefix(\"sha256=\")\n     if not verify_signature(body, signature):\n         raise HTTPException(status_code=401, detail=\"bad signature\")\n     payload = parse_payload(body)\n     background.enqueue(event_type(payload), payload)\n     return {\"ok\": True}\n",
+      "ts": 1760137200.0
+    },
+    {
+      "id": "5ec1a001",
+      "review_id": "demo",
+      "round": 1,
+      "agent": "security",
+      "kind": "assessment",
+      "position": "block",
+      "confidence": 0.85,
+      "claims": [
+        {
+          "file": "app/webhooks.py",
+          "line": 12,
+          "concern": "Signature check switched from hmac.compare_digest to ==, which leaks timing and lets an attacker forge webhook signatures byte by byte.",
+          "severity": "high"
+        },
+        {
+          "file": "requirements.txt",
+          "line": 6,
+          "concern": "orjson is a new native-code dependency added to the request path with no review of its supply chain.",
+          "severity": "medium"
+        }
+      ],
+      "references": [],
+      "text": "Blocking. Line 12 replaces a constant-time compare with ==, which opens a timing attack on webhook signatures. On top of that, orjson is a new compiled dependency sitting directly on untrusted input.",
+      "ts": 1760137204.0
+    },
+    {
+      "id": "9e2f0b11",
+      "review_id": "demo",
+      "round": 1,
+      "agent": "performance",
+      "kind": "assessment",
+      "position": "approve",
+      "confidence": 0.8,
+      "claims": [
+        {
+          "file": "app/webhooks.py",
+          "line": 17,
+          "concern": "orjson.loads parses large webhook payloads roughly 3x faster than json.loads on this hot path.",
+          "severity": "low"
+        },
+        {
+          "file": "app/routes.py",
+          "line": 11,
+          "concern": "Dropping the .decode() avoids an extra full copy of every request body.",
+          "severity": "low"
+        }
+      ],
+      "references": [],
+      "text": "Approve. Parsing raw bytes with orjson removes a decode copy and speeds up the busiest endpoint we have. This is exactly the latency fix we needed.",
+      "ts": 1760137208.0
+    },
+    {
+      "id": "c0a7e221",
+      "review_id": "demo",
+      "round": 1,
+      "agent": "compatibility",
+      "kind": "assessment",
+      "position": "block",
+      "confidence": 0.75,
+      "claims": [
+        {
+          "file": "app/webhooks.py",
+          "line": 15,
+          "concern": "parse_payload changed from str to bytes, so any caller still passing a str will now fail.",
+          "severity": "high"
+        },
+        {
+          "file": "app/webhooks.py",
+          "line": 10,
+          "concern": "verify_signature changed from str to bytes; same risk for any other caller.",
+          "severity": "medium"
+        }
+      ],
+      "references": [],
+      "text": "Blocking. Two public functions changed their argument type from str to bytes. The diff updates app/routes.py, but nothing proves that is the only caller.",
+      "ts": 1760137212.0
+    },
+    {
+      "id": "9a11d331",
+      "review_id": "demo",
+      "round": 1,
+      "agent": "quality",
+      "kind": "assessment",
+      "position": "approve_with_changes",
+      "confidence": 0.7,
+      "claims": [
+        {
+          "file": "app/webhooks.py",
+          "line": 10,
+          "concern": "verify_signature and parse_payload changed behavior with no tests added or updated.",
+          "severity": "medium"
+        }
+      ],
+      "references": [],
+      "text": "The change is small and readable, but no tests come with it. I want a test for both changed functions before merge.",
+      "ts": 1760137216.0
+    },
+    {
+      "id": "b40d1441",
+      "review_id": "demo",
+      "round": 1,
+      "agent": "product",
+      "kind": "assessment",
+      "position": "approve",
+      "confidence": 0.75,
+      "claims": [],
+      "references": [],
+      "text": "Approve. This is the webhook latency fix we promised for this release, and the diff is tightly scoped to it.",
+      "ts": 1760137220.0
+    },
+    {
+      "id": "9e2f0b12",
+      "review_id": "demo",
+      "round": 2,
+      "agent": "performance",
+      "kind": "rebuttal",
+      "position": "approve_with_changes",
+      "confidence": 0.75,
+      "claims": [
+        {
+          "file": "app/webhooks.py",
+          "line": 12,
+          "concern": "The switch to == has nothing to do with the speedup and should be reverted.",
+          "severity": "high"
+        }
+      ],
+      "references": [
+        {
+          "agent": "security",
+          "message_id": "5ec1a001",
+          "stance": "challenge"
+        }
+      ],
+      "text": "Security is right about line 12, and I missed it. Reverting to hmac.compare_digest costs nothing, so I am moving to approve_with_changes. But orjson is pinned at line 6 and widely deployed. Blocking on it throws away a 3x speedup over a hypothetical.",
+      "ts": 1760137224.0
+    },
+    {
+      "id": "5ec1a002",
+      "review_id": "demo",
+      "round": 2,
+      "agent": "security",
+      "kind": "rebuttal",
+      "position": "approve_with_changes",
+      "confidence": 0.7,
+      "claims": [
+        {
+          "file": "app/webhooks.py",
+          "line": 12,
+          "concern": "Must restore hmac.compare_digest before merge.",
+          "severity": "high"
+        }
+      ],
+      "references": [
+        {
+          "agent": "performance",
+          "message_id": "9e2f0b12",
+          "stance": "compromise"
+        }
+      ],
+      "text": "Performance made a fair point. orjson is pinned to an exact version, so the supply-chain risk is bounded and I withdraw my block on it. I move to approve_with_changes on one condition: line 12 goes back to compare_digest.",
+      "ts": 1760137228.0
+    },
+    {
+      "id": "c0a7e222",
+      "review_id": "demo",
+      "round": 2,
+      "agent": "compatibility",
+      "kind": "rebuttal",
+      "position": "block",
+      "confidence": 0.75,
+      "claims": [
+        {
+          "file": "app/webhooks.py",
+          "line": 15,
+          "concern": "Shipping a breaking signature change with no shim means one missed caller becomes a production outage.",
+          "severity": "high"
+        }
+      ],
+      "references": [
+        {
+          "agent": "product",
+          "message_id": "b40d1441",
+          "stance": "challenge"
+        }
+      ],
+      "text": "Product says the diff is tightly scoped, but changing a function signature is never local. Unless parse_payload also accepts str, I stay at block.",
+      "ts": 1760137232.0
+    },
+    {
+      "id": "b40d1442",
+      "review_id": "demo",
+      "round": 2,
+      "agent": "product",
+      "kind": "rebuttal",
+      "position": "approve_with_changes",
+      "confidence": 0.7,
+      "claims": [],
+      "references": [
+        {
+          "agent": "compatibility",
+          "message_id": "c0a7e222",
+          "stance": "challenge"
+        },
+        {
+          "agent": "security",
+          "message_id": "5ec1a002",
+          "stance": "agree"
+        }
+      ],
+      "text": "The only caller in this diff, app/routes.py line 11, was updated, so Compatibility is guarding against code we can't see. I agree with Security's one-line fix and move to approve_with_changes, but holding the release for a speculative caller is not worth it.",
+      "ts": 1760137236.0
+    },
+    {
+      "id": "c0a7e223",
+      "review_id": "demo",
+      "round": 3,
+      "agent": "compatibility",
+      "kind": "rebuttal",
+      "position": "block",
+      "confidence": 0.65,
+      "claims": [],
+      "references": [
+        {
+          "agent": "product",
+          "message_id": "b40d1442",
+          "stance": "compromise"
+        }
+      ],
+      "text": "A str | bytes shim in parse_payload would satisfy me, and I'd approve with that change. It isn't in this diff, though, and nobody has confirmed there are no other callers, so I stay at block at lower confidence.",
+      "ts": 1760137240.0
+    },
+    {
+      "id": "9a11d333",
+      "review_id": "demo",
+      "round": 3,
+      "agent": "quality",
+      "kind": "rebuttal",
+      "position": "block",
+      "confidence": 0.8,
+      "claims": [
+        {
+          "file": "app/webhooks.py",
+          "line": 12,
+          "concern": "A security-sensitive regression got this far precisely because verify_signature has no test.",
+          "severity": "high"
+        }
+      ],
+      "references": [
+        {
+          "agent": "product",
+          "message_id": "b40d1442",
+          "stance": "challenge"
+        },
+        {
+          "agent": "security",
+          "message_id": "5ec1a001",
+          "stance": "agree"
+        }
+      ],
+      "text": "Security's finding changes my view. A test would have caught the == regression, so this is evidence of a gap, not a style nit. I am moving from approve_with_changes to block until verify_signature has a test.",
+      "ts": 1760137244.0
+    },
+    {
+      "id": "b40d1443",
+      "review_id": "demo",
+      "round": 3,
+      "agent": "product",
+      "kind": "rebuttal",
+      "position": "approve_with_changes",
+      "confidence": 0.65,
+      "claims": [],
+      "references": [
+        {
+          "agent": "quality",
+          "message_id": "9a11d333",
+          "stance": "compromise"
+        }
+      ],
+      "text": "Fair hit from Quality. I'd accept one test for verify_signature added to this PR, but not a full test suite. If that still isn't enough for Compatibility and Quality, a human should make the ship call.",
+      "ts": 1760137248.0
+    }
+  ],
+  "tradeoff_map": {
+    "review_id": "demo",
+    "outcome": "escalate",
+    "final_positions": {
+      "security": "approve_with_changes",
+      "performance": "approve_with_changes",
+      "compatibility": "block",
+      "quality": "block",
+      "product": "approve_with_changes"
+    },
+    "resolved": [
+      "Signature check must stay constant-time: all agents agree to restore hmac.compare_digest at app/webhooks.py line 12.",
+      "orjson as a new dependency is acceptable because it is pinned to an exact version (Security withdrew its block after Performance's argument)."
+    ],
+    "unresolved": [
+      "compatibility vs product: parse_payload's str-to-bytes change may break callers outside this diff. Either ship now and audit later, or add a str | bytes shim first.",
+      "quality vs product: merge with only a verify_signature test, or hold the release until both changed functions are covered."
+    ],
+    "human_decisions": [
+      "Are there callers of parse_payload or verify_signature outside app/routes.py (background jobs, other services) that still pass str?",
+      "Is shipping the webhook latency fix in this release worth merging security-sensitive code with minimal test coverage?"
+    ]
+  }
+}
