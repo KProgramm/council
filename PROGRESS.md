@@ -21,11 +21,13 @@ python3 -c "import json; from contracts.schema import Message, TradeoffMap; d=js
 
 ---
 
-## G4: API server — BUILT, not yet merged (branch `krish/server`)
-
+## G4: API server — DONE, merged to main, 5:20 PM
 **Live:** `server/app.py` with `POST /reviews`, `WS /ws/{review_id}`, `WS /replay`, `GET /`, `GET /fixtures/...`. Tested against a real uvicorn server: `POST /reviews` then `/ws/{id}` streamed all 14 fixture messages 1.5s apart, diff → debate → verdict.
 
 **Departures from plan:**
+
+**Action needed:** everyone rerun `pip install -r requirements.txt` now that this is merged (picks up `uvicorn[standard]`).
+
 - `/replay` is a WebSocket route, not a plain GET (a WS connection starts as a GET under the hood, so this satisfies the plan's intent). **Mayu: connect with `new WebSocket('ws://localhost:8000/replay')`, not a fetch.**
 - `requirements.txt` now needs `uvicorn[standard]`, not plain `uvicorn` (plain uvicorn can't do WebSockets). **Everyone: rerun `pip install -r requirements.txt` after this merges.**
 - `POST /reviews` auto-falls-back to the demo transcript until Shiven's `run_council` is real. Once G1 merges, live debates run with zero server changes.
