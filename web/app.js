@@ -186,13 +186,27 @@ function addVerdict(m) {
   const esc = t.outcome === "escalate";
   const positions = Object.values(t.final_positions || {});
   const agreement = !esc && positions.length === Object.keys(AGENTS).length && positions.every(position => position === positions[0]) ? positions[0] : null;
-  map.className = esc ? 'escalate' : agreement === 'block' ? 'blocked' : 'consensus';
-  map.appendChild(el('h2', '', esc ? 'Human review needed' : agreement === 'block' ? 'Council agrees: block this PR'
-    : agreement === 'approve' ? 'Council agrees: approve' : agreement === 'approve_with_changes' ? 'Council agrees: changes required' : 'Review needs attention'));
-  if (!esc && !agreement) {
-    map.className = 'escalate';
-    map.appendChild(el('div', 'row', 'The council did not record a complete agreement. Review the transcript before deciding.'));
+  const DECISION = {
+    auto_approve: ['consensus', 'Council decision: approve'],
+    approve_with_changes: ['consensus', 'Council decision: approve with changes'],
+    block: ['blocked', 'Council decision: block this PR'],
+    escalate: ['escalate', 'Human review needed (critical risk)'],
+  };
+  if (t.decision && DECISION[t.decision]) {   // decision engine verdicts (judge agent)
+    map.className = DECISION[t.decision][0];
+    const conf = typeof t.confidence === 'number' ? ` (${Math.round(t.confidence * 100)}% confident)` : '';
+    map.appendChild(el('h2', '', DECISION[t.decision][1] + conf));
+  } else {
+    map.className = esc ? 'escalate' : agreement === 'block' ? 'blocked' : 'consensus';
+    map.appendChild(el('h2', '', esc ? 'Human review needed' : agreement === 'block' ? 'Council agrees: block this PR'
+      : agreement === 'approve' ? 'Council agrees: approve' : agreement === 'approve_with_changes' ? 'Council agrees: changes required' : 'Review needs attention'));
+    if (!esc && !agreement) {
+      map.className = 'escalate';
+      map.appendChild(el('div', 'row', 'The council did not record a complete agreement. Review the transcript before deciding.'));
+    }
   }
+  if (t.root_cause) { const r = el('div', 'row'); r.appendChild(el('b', '', 'Why')); r.appendChild(el('div', '', t.root_cause)); map.appendChild(r); }
+  if (t.suggested_fix) { const r = el('div', 'row'); r.appendChild(el('b', '', 'Suggested fix')); r.appendChild(el('div', '', t.suggested_fix)); map.appendChild(r); }
 
   const add = (label, items) => {
     if (!items || !items.length) return;
@@ -220,6 +234,7 @@ function handle(m) {
 function setBusy(busy) {
   debateBusy = busy;
   $("run").disabled = busy;
+  $("stop").disabled = !busy;
   if (typeof updateGitHubControls === "function") updateGitHubControls();
   if (typeof lockConnections === "function") lockConnections();
 }
@@ -278,6 +293,7 @@ async function runLive(diff) {
   $("status").textContent = "Contacting the council…";
   try {
     const { review_id } = await requestJSON('/reviews', { diff });
+    currentReviewId = review_id;
     if (id !== runId) return;
     $("status").textContent = "Live debate in progress.";
     // The server replays history to late sockets, so connecting after POST loses nothing.
@@ -290,7 +306,30 @@ async function runLive(diff) {
   }
 }
 
+/* ---------- Stop / Clear ---------- */
+let currentReviewId = null;
+
+// Stop: tell the server to cancel the review (saves the remaining LLM calls), then end the UI run.
+async function stopReview() {
+  const rid = currentReviewId;
+  currentReviewId = null;
+  runId++;  // ignore anything still arriving from the old socket
+  if (socket) { socket.onmessage = socket.onclose = socket.onerror = null; socket.close(); socket = null; }
+  finish(messageCount ? `Stopped after ${messageCount} message${messageCount === 1 ? "" : "s"}.` : "Stopped.");
+  if (rid) { try { await requestJSON(`/reviews/${rid}/stop`, {}); } catch (err) { /* already finished */ } }
+}
+
+function clearAll() {
+  if (debateBusy) stopReview();
+  reset();
+  $("input").value = "";
+  $("diff").textContent = "";
+  $("status").textContent = "";
+}
+
 /* ---------- Wiring ---------- */
+$("stop").onclick = stopReview;
+$("clear").onclick = clearAll;
 $("run").onclick = () => {
   const d = $("input").value.trim();
   if (!d) {

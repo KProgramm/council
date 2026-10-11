@@ -145,6 +145,7 @@ class ReviewRequest(BaseModel):
 # Holds references to running tasks; asyncio only keeps weak references, so an
 # unreferenced background task can be garbage-collected mid-run.
 _tasks: set[asyncio.Task] = set()
+_review_tasks: dict[str, asyncio.Task] = {}  # review_id -> its task, so the Stop button can cancel it
 
 
 @app.post("/reviews")
@@ -154,8 +155,25 @@ async def create_review(req: ReviewRequest):
     stream = streams[review_id] = ReviewStream()
     task = asyncio.create_task(run_serial_review(req.diff, review_id, stream))
     _tasks.add(task)
+    _review_tasks[review_id] = task
     task.add_done_callback(_tasks.discard)
+    task.add_done_callback(lambda _t, rid=review_id: _review_tasks.pop(rid, None))
     return {"review_id": review_id}
+
+
+@app.post("/reviews/{review_id}/stop")
+async def stop_review(review_id: str):
+    """Cancel a running review mid-debate. Cancelling the task also cancels in-flight reviewer calls
+    (agents/runtime.py cancels its per-round tasks) and closes the stream so the browser's socket ends."""
+    task = _review_tasks.get(review_id)
+    if task is None or task.done():
+        return {"stopped": False}
+    task.cancel()
+    stream = streams.get(review_id)
+    if stream is not None:
+        stream.error = "Stopped."
+        stream.close()
+    return {"stopped": True}
 
 
 async def pump(ws: WebSocket, stream: ReviewStream) -> None:
