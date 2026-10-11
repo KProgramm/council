@@ -1,4 +1,4 @@
-# transport/memory_bus.py — stub. Owner: Shiven (G1).
+import asyncio
 from typing import Awaitable, Callable
 
 from contracts.schema import Message
@@ -11,7 +11,7 @@ class MemoryBus:
         self.handlers: list[Callable[[Message], Awaitable[None]]] = []
 
     def subscribe(self, handler: Callable[[Message], Awaitable[None]]) -> None:
-        raise NotImplementedError("G1")
+        self.handlers.append(handler)
 
     async def publish(self, msg: Message) -> None:
-        raise NotImplementedError("G1")
+        await asyncio.gather(*(handler(msg) for handler in self.handlers))
