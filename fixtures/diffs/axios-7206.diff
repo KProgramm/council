@@ -1,0 +1,40 @@
+diff --git a/lib/adapters/http.js b/lib/adapters/http.js
+index 524c278505..ccc89be66d 100755
+--- a/lib/adapters/http.js
++++ b/lib/adapters/http.js
+@@ -858,6 +858,9 @@ export default isHttpAdapterSupported && function httpAdapter(config) {
+           req
+         ));
+       });
++    } else {
++      // explicitly reset the socket timeout value for a possible `keep-alive` request
++      req.setTimeout(0);
+     }
+ 
+ 
+diff --git a/test/unit/adapters/http.js b/test/unit/adapters/http.js
+index 6c4375a50b..864d29a3c5 100644
+--- a/test/unit/adapters/http.js
++++ b/test/unit/adapters/http.js
+@@ -2682,6 +2682,21 @@ describe('supports http with nodejs', function () {
+       assert.strictEqual(await getStream(err.response.data), 'OK');
+     }
+   });
++
++  describe('keep-alive', () => {
++    it('should not fail with "socket hang up" when using timeouts', async () => {
++      server = await startHTTPServer(async (req, res) => {
++        if (req.url === '/wait') {
++          await new Promise(resolve => setTimeout(resolve, 5000));
++        }
++        res.end('ok');
++      })
++
++      const baseURL = LOCAL_SERVER_URL;
++      await axios.get('/1', {baseURL, timeout: 1000});
++      await axios.get(`/wait`, {baseURL, timeout: 0});
++    }, 15000);
++  });
+ });
+ 
+ 

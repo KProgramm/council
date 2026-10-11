@@ -31,6 +31,11 @@ SUMMARY_FIELDS = (
     "council_tradeoffs_surfaced",
     "baseline_escalated",
     "council_escalated",
+    "label",
+    "baseline_decision",
+    "council_decision",
+    "baseline_correct",
+    "council_correct",
 )
 
 
@@ -190,13 +195,48 @@ def _extract_tradeoff_map(transcript: list[Message]) -> TradeoffMap:
     return TradeoffMap.model_validate_json(verdicts[-1].text)
 
 
+_POSITION_TO_DECISION = {
+    "approve": "auto_approve",
+    "approve_with_changes": "approve_with_changes",
+    "block": "block",
+    "escalate": "escalate",
+}
+
+
+def _decision_for(messages: list[Message], tradeoff_map: TradeoffMap | None) -> str:
+    """The run's decision: the council's map, or the single baseline reviewer's position."""
+    if tradeoff_map is not None:
+        if tradeoff_map.decision is not None:
+            return tradeoff_map.decision
+        return "escalate" if tradeoff_map.outcome == "escalate" else "approve_with_changes"
+    positions = [m.position for m in messages if m.agent != "system" and m.position]
+    return _POSITION_TO_DECISION.get(positions[-1], "escalate") if positions else "escalate"
+
+
+def _is_correct(label: str, decision: str, caught_root_cause: bool) -> bool:
+    """Was the decision right for this PR?
+
+    A bad (reverted) PR is handled correctly by blocking it, or by letting it through with
+    changes only if the review actually named the root cause. A good PR is handled correctly
+    when it may merge. Escalating is never correct: it hands the decision back to a human.
+    This keeps "always block" and "always approve_with_changes" from scoring well.
+    """
+    if label == "bad":
+        return decision == "block" or (decision == "approve_with_changes" and caught_root_cause)
+    return decision in {"auto_approve", "approve_with_changes"}
+
+
 def _score_run(
     messages: list[Message],
     caught_root_cause: bool,
     tradeoff_map: TradeoffMap | None,
+    label: str = "bad",
 ) -> dict[str, Any]:
     reviewer_messages = [message for message in messages if message.agent != "system"]
+    decision = _decision_for(messages, tradeoff_map)
     return {
+        "decision": decision,
+        "correct": _is_correct(label, decision, caught_root_cause),
         "caught_root_cause": caught_root_cause,
         "distinct_concerns": _distinct_concerns(reviewer_messages),
         "tradeoffs_surfaced": len(tradeoff_map.unresolved) if tradeoff_map else 0,
@@ -211,21 +251,24 @@ async def _evaluate_entry(entry: dict[str, str]) -> tuple[dict[str, Any], dict[s
     diff = diff_path.read_text(encoding="utf-8")
     review_id = diff_path.stem
     ground_truth = entry["ground_truth"]
+    label = entry.get("label", "bad")
 
     baseline_message = await _baseline_review(diff, review_id)
     baseline_review = _review_for_scoring([baseline_message])
-    baseline_caught = await _score_root_cause(ground_truth, baseline_review)
-    baseline_scores = _score_run([baseline_message], baseline_caught, None)
+    # A good PR has no root cause to find, so skip the judge call (and its cost) for those.
+    baseline_caught = label == "bad" and await _score_root_cause(ground_truth, baseline_review)
+    baseline_scores = _score_run([baseline_message], baseline_caught, None, label)
 
     council_transcript = await run_council(diff, MemoryBus(), review_id)
     tradeoff_map = _extract_tradeoff_map(council_transcript)
     council_review = _review_for_scoring(council_transcript)
-    council_caught = await _score_root_cause(ground_truth, council_review)
-    council_scores = _score_run(council_transcript, council_caught, tradeoff_map)
+    council_caught = label == "bad" and await _score_root_cause(ground_truth, council_review)
+    council_scores = _score_run(council_transcript, council_caught, tradeoff_map, label)
 
     name = entry.get("name") or diff_path.stem
     result = {
         "file": entry["file"],
+        "label": label,
         "pr_url": entry.get("pr_url"),
         "ground_truth": ground_truth,
         "baseline": {
@@ -248,6 +291,11 @@ async def _evaluate_entry(entry: dict[str, str]) -> tuple[dict[str, Any], dict[s
         "council_tradeoffs_surfaced": council_scores["tradeoffs_surfaced"],
         "baseline_escalated": baseline_scores["escalated"],
         "council_escalated": council_scores["escalated"],
+        "label": label,
+        "baseline_decision": baseline_scores["decision"],
+        "council_decision": council_scores["decision"],
+        "baseline_correct": baseline_scores["correct"],
+        "council_correct": council_scores["correct"],
     }
     return {"name": name, "result": result}, summary_row
 
@@ -264,37 +312,57 @@ def _write_summary(rows: list[dict[str, Any]], results_dir: Path) -> None:
         writer.writerows(rows)
 
 
+def _rate(rows: list[dict[str, Any]], column: str, where=lambda row: True) -> float:
+    selected = [row for row in rows if where(row)]
+    return mean(_truthy(row[column]) for row in selected) if selected else 0.0
+
+
+def _truthy(value: Any) -> bool:
+    return value if isinstance(value, bool) else str(value).lower() == "true"
+
+
+def metrics(rows: list[dict[str, Any]], side: str) -> dict[str, float]:
+    """The headline numbers for "baseline" or "council"."""
+    bad = lambda row: row["label"] == "bad"
+    good = lambda row: row["label"] == "good"
+    return {
+        "Decision accuracy": _rate(rows, f"{side}_correct"),
+        "Root cause found (bad PRs)": _rate(rows, f"{side}_caught_root_cause", bad),
+        "Escalation rate": _rate(rows, f"{side}_escalated"),
+        "False-block rate (good PRs)": mean(
+            row[f"{side}_decision"] == "block" for row in rows if good(row)
+        )
+        if any(good(row) for row in rows)
+        else 0.0,
+    }
+
+
 def _write_chart(rows: list[dict[str, Any]], results_dir: Path) -> None:
-    labels = ["Caught root cause", "Tradeoffs surfaced"]
-    baseline_values = [
-        mean(bool(row["baseline_caught_root_cause"]) for row in rows),
-        mean(row["baseline_tradeoffs_surfaced"] for row in rows),
-    ]
-    council_values = [
-        mean(bool(row["council_caught_root_cause"]) for row in rows),
-        mean(row["council_tradeoffs_surfaced"] for row in rows),
-    ]
+    baseline = metrics(rows, "baseline")
+    council = metrics(rows, "council")
+    labels = list(baseline)
     positions = range(len(labels))
     width = 0.36
 
-    figure, axis = plt.subplots(figsize=(8, 5))
+    figure, axis = plt.subplots(figsize=(10, 5))
     baseline_bars = axis.bar(
         [position - width / 2 for position in positions],
-        baseline_values,
+        list(baseline.values()),
         width,
-        label="Baseline",
+        label="Single reviewer",
         color="#d87942",
     )
     council_bars = axis.bar(
         [position + width / 2 for position in positions],
-        council_values,
+        list(council.values()),
         width,
         label="Council",
         color="#327d73",
     )
     axis.set_xticks(list(positions), labels)
-    axis.set_ylabel("Mean per diff")
-    axis.set_title("Single reviewer vs. council")
+    axis.set_ylim(0, 1.1)
+    axis.set_ylabel("Rate (accuracy / root cause: higher is better; escalation / false-block: lower)")
+    axis.set_title(f"Single reviewer vs. council ({len(rows)} PRs)")
     axis.legend()
     axis.bar_label(baseline_bars, fmt="%.2f", padding=3)
     axis.bar_label(council_bars, fmt="%.2f", padding=3)
@@ -337,7 +405,13 @@ async def _async_main(arguments: argparse.Namespace) -> None:
         diff_path=arguments.diff,
         ground_truth=arguments.ground_truth,
     )
+    if arguments.split:
+        entries = [e for e in entries if e.get("split") == arguments.split]
+        if not entries:
+            raise ValueError(f"No dataset entries have split={arguments.split!r}")
     rows = await run_evaluation(entries, arguments.results_dir)
+    for side in ("baseline", "council"):
+        print(side, {k: round(v, 2) for k, v in metrics(rows, side).items()})
     print(f"Evaluated {len(rows)} diff(s); wrote results to {arguments.results_dir}")
 
 
@@ -348,6 +422,11 @@ def main() -> None:
     parser.add_argument(
         "--ground-truth",
         help="One-sentence root cause, required for --diff or an empty dataset",
+    )
+    parser.add_argument(
+        "--split",
+        choices=["dev", "test"],
+        help="Only entries with this split (tune prompts on dev, report on test)",
     )
     parser.add_argument("--results-dir", type=Path, default=RESULTS_DIR)
     asyncio.run(_async_main(parser.parse_args()))

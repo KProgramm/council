@@ -1,0 +1,41 @@
+diff --git a/lib/adapters/http.js b/lib/adapters/http.js
+index 5326dd03b2..49d3f949f5 100755
+--- a/lib/adapters/http.js
++++ b/lib/adapters/http.js
+@@ -737,7 +737,7 @@ export default isHttpAdapterSupported && function httpAdapter(config) {
+ 
+       if (responseType === 'stream') {
+         response.data = responseStream;
+-        settle(resolve, abort, response);
++        settle(resolve, reject, response);
+       } else {
+         const responseBuffer = [];
+         let totalResponseBytes = 0;
+diff --git a/test/unit/adapters/http.js b/test/unit/adapters/http.js
+index 7d0cf1861d..6c4375a50b 100644
+--- a/test/unit/adapters/http.js
++++ b/test/unit/adapters/http.js
+@@ -2665,6 +2665,23 @@ describe('supports http with nodejs', function () {
+       });
+     });
+   });
++
++  it('should not abort stream on settle rejection', async () => {
++    server = await startHTTPServer((req, res) => {
++      res.statusCode = 404;
++      res.end('OK');
++    });
++
++    try {
++      await axios.get(LOCAL_SERVER_URL, {
++        responseType: 'stream'
++      });
++
++      assert.fail('should be rejected');
++    } catch(err) {
++      assert.strictEqual(await getStream(err.response.data), 'OK');
++    }
++  });
+ });
+ 
+ 

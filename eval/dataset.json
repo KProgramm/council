@@ -2,41 +2,113 @@
   {
     "file": "fixtures/diffs/requests-6667.diff",
     "pr_url": "https://github.com/psf/requests/pull/6667",
-    "ground_truth": "Reverted because caching a default SSLContext introduced edge cases and concurrency issues that outweighed the performance benefit."
+    "ground_truth": "Reverted because caching a default SSLContext introduced edge cases and concurrency issues that outweighed the performance benefit.",
+    "label": "bad",
+    "split": "dev"
   },
   {
     "file": "fixtures/diffs/axios-3785.diff",
     "pr_url": "https://github.com/axios/axios/pull/3785",
-    "ground_truth": "Reverted for standard browsers because retaining the Content-Type header for FormData payloads broke browser FormData support."
+    "ground_truth": "Reverted for standard browsers because retaining the Content-Type header for FormData payloads broke browser FormData support.",
+    "label": "bad",
+    "split": "dev"
   },
   {
     "file": "fixtures/diffs/fastapi-13314.diff",
     "pr_url": "https://github.com/fastapi/fastapi/pull/13314",
-    "ground_truth": "Reverted because the annotation change broke Annotated custom validations such as AfterValidator, a use case missing documentation and tests."
+    "ground_truth": "Reverted because the annotation change broke Annotated custom validations such as AfterValidator, a use case missing documentation and tests.",
+    "label": "bad",
+    "split": "dev"
   },
   {
     "file": "fixtures/diffs/django-14709.diff",
     "pr_url": "https://github.com/django/django/pull/14709",
-    "ground_truth": "Reverted because shallow-copying WhereNode children allowed reused querysets evaluated in nested nodes to mutate JOIN aliases."
+    "ground_truth": "Reverted because shallow-copying WhereNode children allowed reused querysets evaluated in nested nodes to mutate JOIN aliases.",
+    "label": "bad",
+    "split": "dev"
   },
   {
     "file": "fixtures/diffs/django-17969.diff",
     "pr_url": "https://github.com/django/django/pull/17969",
-    "ground_truth": "Reverted because using multi-row INSERT statements on Oracle caused crashes with Oracle versions greater than 23.3."
+    "ground_truth": "Reverted because using multi-row INSERT statements on Oracle caused crashes with Oracle versions greater than 23.3.",
+    "label": "bad",
+    "split": "test"
   },
   {
     "file": "fixtures/diffs/django-18316.diff",
     "pr_url": "https://github.com/django/django/pull/18316",
-    "ground_truth": "Reverted because the subclass-identification refactor caused a performance regression."
+    "ground_truth": "Reverted because the subclass-identification refactor caused a performance regression.",
+    "label": "bad",
+    "split": "test"
   },
   {
     "file": "fixtures/diffs/django-16248.diff",
     "pr_url": "https://github.com/django/django/pull/16248",
-    "ground_truth": "Reverted because the admin sidebar change caused a visual regression when both navigation and filter sidebars were visible."
+    "ground_truth": "Reverted because the admin sidebar change caused a visual regression when both navigation and filter sidebars were visible.",
+    "label": "bad",
+    "split": "test"
   },
   {
     "file": "fixtures/diffs/requests-3713.diff",
     "pr_url": "https://github.com/psf/requests/pull/3713",
-    "ground_truth": "Reverted because restricting URL preparation to HTTP and HTTPS broke docker-py, while other IDNA workarounds were considered sufficient."
+    "ground_truth": "Reverted because restricting URL preparation to HTTP and HTTPS broke docker-py, while other IDNA workarounds were considered sufficient.",
+    "label": "bad",
+    "split": "test"
+  },
+  {
+    "file": "fixtures/diffs/fastapi-14458.diff",
+    "pr_url": "https://github.com/fastapi/fastapi/pull/14458",
+    "ground_truth": "No defect. Merged and never reverted: Fix using a class (not instance) dependency that has a __call__ method. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "split": "dev"
+  },
+  {
+    "file": "fixtures/diffs/axios-7206.diff",
+    "pr_url": "https://github.com/axios/axios/pull/7206",
+    "ground_truth": "No defect. Merged and never reverted: Fix 'socket hang up' for keep-alive requests when using timeouts. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "split": "dev"
+  },
+  {
+    "file": "fixtures/diffs/requests-6963.diff",
+    "pr_url": "https://github.com/psf/requests/pull/6963",
+    "ground_truth": "No defect. Merged and never reverted: Fix CVE-2024-47081: manual URL parsing leaked netloc credentials. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "split": "dev"
+  },
+  {
+    "file": "fixtures/diffs/flask-5797.diff",
+    "pr_url": "https://github.com/pallets/flask/pull/5797",
+    "ground_truth": "No defect. Merged and never reverted: Push preserved contexts in the correct order. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "split": "dev"
+  },
+  {
+    "file": "fixtures/diffs/fastapi-14430.diff",
+    "pr_url": "https://github.com/fastapi/fastapi/pull/14430",
+    "ground_truth": "No defect. Merged and never reverted: Fix optional sequence handling with the Python 3.10 union syntax. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "split": "test"
+  },
+  {
+    "file": "fixtures/diffs/fastapi-14372.diff",
+    "pr_url": "https://github.com/fastapi/fastapi/pull/14372",
+    "ground_truth": "No defect. Merged and never reverted: Make the result of Depends() and Security() hashable. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "split": "test"
+  },
+  {
+    "file": "fixtures/diffs/axios-7193.diff",
+    "pr_url": "https://github.com/axios/axios/pull/7193",
+    "ground_truth": "No defect. Merged and never reverted: Fix a regression that interrupted the data stream for non-OK HTTP statuses. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "split": "test"
+  },
+  {
+    "file": "fixtures/diffs/axios-6961.diff",
+    "pr_url": "https://github.com/axios/axios/pull/6961",
+    "ground_truth": "No defect. Merged and never reverted: Prevent RangeError when using large Buffers in requests. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "split": "test"
   }
 ]

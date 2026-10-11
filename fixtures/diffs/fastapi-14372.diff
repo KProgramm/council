@@ -1,0 +1,69 @@
+diff --git a/fastapi/dependencies/utils.py b/fastapi/dependencies/utils.py
+index 4b69e39a15a10..1e92c1ba2a2fb 100644
+--- a/fastapi/dependencies/utils.py
++++ b/fastapi/dependencies/utils.py
+@@ -1,3 +1,4 @@
++import dataclasses
+ import inspect
+ from contextlib import AsyncExitStack, contextmanager
+ from copy import copy, deepcopy
+@@ -428,7 +429,7 @@ def analyze_param(
+     if depends is not None and depends.dependency is None:
+         # Copy `depends` before mutating it
+         depends = copy(depends)
+-        depends.dependency = type_annotation
++        depends = dataclasses.replace(depends, dependency=type_annotation)
+ 
+     # Handle non-param type annotations like Request
+     if lenient_issubclass(
+diff --git a/fastapi/params.py b/fastapi/params.py
+index 6a58d5808e006..6d07df35e1fd6 100644
+--- a/fastapi/params.py
++++ b/fastapi/params.py
+@@ -762,13 +762,13 @@ def __init__(
+         )
+ 
+ 
+-@dataclass
++@dataclass(frozen=True)
+ class Depends:
+     dependency: Optional[Callable[..., Any]] = None
+     use_cache: bool = True
+     scope: Union[Literal["function", "request"], None] = None
+ 
+ 
+-@dataclass
++@dataclass(frozen=True)
+ class Security(Depends):
+     scopes: Optional[Sequence[str]] = None
+diff --git a/tests/test_depends_hashable.py b/tests/test_depends_hashable.py
+new file mode 100644
+index 0000000000000..d57f2726ec52f
+--- /dev/null
++++ b/tests/test_depends_hashable.py
+@@ -0,0 +1,25 @@
++# This is more or less a workaround to make Depends and Security hashable
++# as other tools that use them depend on that
++# Ref: https://github.com/fastapi/fastapi/pull/14320
++
++from fastapi import Depends, Security
++
++
++def dep():
++    pass
++
++
++def test_depends_hashable():
++    dep()  # just for coverage
++    d1 = Depends(dep)
++    d2 = Depends(dep)
++    d3 = Depends(dep, scope="function")
++    d4 = Depends(dep, scope="function")
++
++    s1 = Security(dep)
++    s2 = Security(dep)
++
++    assert hash(d1) == hash(d2)
++    assert hash(s1) == hash(s2)
++    assert hash(d1) != hash(d3)
++    assert hash(d3) == hash(d4)
