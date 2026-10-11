@@ -54,6 +54,7 @@ let lastRound = null;
 let lastPosition = {};  // agent -> most recent position (to detect a changed mind)
 let messageCount = 0;
 let sawVerdict = false;
+let debateBusy = false;
 
 /* ---------- Rendering ---------- */
 function renderDiff(text) {
@@ -213,8 +214,10 @@ function handle(m) {
 }
 
 function setBusy(busy) {
+  debateBusy = busy;
   $("run").disabled = busy;
   $("replay").disabled = busy;
+  if (typeof updateGitHubControls === "function") updateGitHubControls();
 }
 
 function finish(text) {

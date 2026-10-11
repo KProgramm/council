@@ -16,6 +16,28 @@
     <span id="status" role="status">Press Replay to watch five agents debate a pull request.</span>
   </header>
 
+  <section class="github-panel" aria-labelledby="github-heading">
+    <h2 id="github-heading">GitHub inbox</h2>
+    <form id="repository-form" class="github-controls">
+      <label class="github-field">Repository
+        <input id="repository" aria-label="GitHub repository" value="KProgramm/council" placeholder="owner/repository" required>
+      </label>
+      <button id="watch-repository" type="submit">Connect repository</button>
+      <button id="stop-watching" type="button" disabled>Disconnect</button>
+      <label class="github-option"><input id="auto-load-pr" type="checkbox" checked> Auto-load new diffs</label>
+    </form>
+    <p id="watch-status" class="github-note" role="status">Checks the newest 30 open PRs every two minutes while this page is open. Reviews start when you click Run council.</p>
+    <ul id="pr-inbox" aria-label="Open pull requests" hidden></ul>
+    <form id="pull-request-form" class="github-controls">
+      <label class="github-field">Or load a pull request
+        <input id="pr-url" type="url" aria-label="GitHub pull request URL" placeholder="https://github.com/owner/repo/pull/123" required>
+      </label>
+      <button id="load-pr" type="submit">Load diff</button>
+    </form>
+    <p id="github-status" class="github-note" role="status">Public repositories work without signing in.</p>
+    <div id="pr-source" hidden></div>
+  </section>
+
   <div class="board">
     <section class="panel"><h2>The diff</h2><div class="scroll flush"><div id="diff"></div></div></section>
     <section class="panel"><h2>The channel</h2><div class="scroll" id="channel" aria-live="polite"></div></section>
@@ -38,5 +60,6 @@
 </main>
 
 <script src="app.js"></script>
+<script src="github.js"></script>
 </body>
 </html>

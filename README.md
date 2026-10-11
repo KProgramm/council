@@ -21,6 +21,41 @@ python -m agents.runtime fixtures/diffs/demo.diff   # council in the terminal (G
 uvicorn server.app:app --reload                     # web UI at http://localhost:8000 (G4)
 ```
 
+## GitHub repository inbox
+
+Open the local app, enter `owner/repository` or its GitHub URL, then click
+**Connect repository**. Council lists the newest 30 open PRs and checks for new
+ones every two minutes while the page stays open. **Auto-load new diffs** loads
+the newest PR on connection and newly arriving PRs when the review area is idle.
+Click **Load diff** on any listed PR to select it, then **Run council** to review
+it using the provider already configured in `.env` (including Brev).
+
+Incoming PRs never replace an edited diff or an active/completed debate. They stay
+in the inbox until you select them. Updates to the currently loaded PR are fetched
+automatically while its diff is unedited and no debate has started. **Disconnect**
+stops polling; closing or reloading the page also stops the watch. A PR URL can
+also be loaded directly, including merged PRs for demonstrations.
+
+Public repos need no credentials. For private repos or higher GitHub API limits,
+add `GITHUB_TOKEN` to the server's `.env` and restart it. Use a fine-grained token
+limited to the selected repositories with **Pull requests: Read** permission.
+The token stays on the server. GitHub imports are limited to 400 diff lines and
+32 KB to keep inputs manageable for the local model; oversized PRs show an error
+instead of silently truncating the diff. The original Message/TradeoffMap review
+contracts are unchanged.
+
+GitHub's REST API supplies the PR metadata and unified diff:
+[Pull requests API](https://docs.github.com/en/rest/pulls/pulls).
+This integration reads PRs; automated reviews, push events, and posting results
+back to GitHub can be added as separate steps.
+
+Verify the integration:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+node tests/test_github_ui.cjs
+```
+
 ## Who owns what
 
 Only edit your own folders. `contracts/` is frozen; changes go through Krish.

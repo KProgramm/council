@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from contracts.schema import Message, TradeoffMap
+from integrations.github import router as github_router
 
 load_dotenv()  # so BUS / SLIM_* from .env are visible to make_bus()
 ROOT = Path(__file__).resolve().parent.parent
@@ -23,6 +24,7 @@ DEMO_TRANSCRIPT = ROOT / "fixtures/transcripts/demo.json"
 REPLAY_DELAY = 1.5  # seconds between replayed messages
 
 app = FastAPI(title="PR Council")
+app.include_router(github_router)
 
 
 class ReviewStream:
