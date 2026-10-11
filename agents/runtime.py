@@ -4,18 +4,13 @@ from pathlib import Path
 
 from agents.base import ReviewAgent
 from agents.judge import JudgeVerdict, judge
+from agents.validation import REVIEWERS
 from council import convergence
 from council.tradeoff_map import build_map
 from contracts.bus import Bus
 from contracts.schema import AgentName, Message
 
-AGENT_NAMES: tuple[AgentName, ...] = (
-    "security",
-    "performance",
-    "compatibility",
-    "quality",
-    "product",
-)
+AGENT_NAMES: tuple[AgentName, ...] = REVIEWERS
 
 MAX_EXTRA_ROUNDS = 3  # judge-requested rounds on top of the normal 3
 
@@ -40,7 +35,15 @@ async def run_council(diff: str, bus: Bus, review_id: str) -> list[Message]:
     )
 
     async def run_round(round_num: int) -> None:
-        responses = await asyncio.gather(*(agent.speak(round_num) for agent in agents))
+        tasks = [asyncio.create_task(agent.speak(round_num)) for agent in agents]
+        try:
+            responses = await asyncio.gather(*tasks)
+        except BaseException:
+            # Stop button / client disconnect: cancel every in-flight reviewer call, then re-raise.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         for response in responses:
             if response is not None:
                 await bus.publish(response)

@@ -13,62 +13,77 @@
 <main>
   <header>
     <h1>PR Council</h1>
-    <span id="status" role="status">Connect a repository to start automatic PR reviews.</span>
-    <button id="replay" type="button">Replay demo</button>
+    <span id="status" role="status">Connect a model, load a repository, and choose PRs to review.</span>
   </header>
 
   <details id="connection-settings" class="github-panel">
     <summary>Connections <span id="connection-summary" class="github-note"></span></summary>
-    <div class="connection-columns">
-      <form id="settings-form" autocomplete="off">
-        <h2>Model</h2>
-        <p class="github-note">Use the shared team model and your team access key.</p>
-        <button id="use-team-model" type="button">Use team Brev model</button>
-        <label class="github-field">Model access key <span id="llm-key-state"></span>
-          <input id="llm-api-key" type="password" aria-label="Model access key" autocomplete="off" placeholder="Paste the team key once">
-        </label>
-        <label class="github-option"><input id="clear-llm-api-key" type="checkbox"> Remove saved model key</label>
-        <details id="advanced-model"><summary>Model options</summary>
-          <div class="settings-grid">
-            <label class="github-field">Provider
-              <select id="llm-provider" aria-label="LLM connection"><option value="brev">Brev / Ollama</option><option value="cisco">Cisco proxy</option><option value="paid">API key provider</option></select>
-            </label>
-            <label class="github-field">Model <input id="llm-model" aria-label="LLM model" maxlength="200" required></label>
-            <label id="llm-url-field" class="github-field">Base URL <input id="llm-base-url" type="url" aria-label="LLM base URL"></label>
-            <label class="github-field">Concurrent model calls <input id="llm-concurrency" type="number" min="1" max="16" required></label>
-          </div>
-        </details>
-        <p id="provider-help" class="github-note"></p>
-        <div class="github-controls"><button id="save-settings" type="submit" disabled>Save model</button><button id="test-model" type="button">Check model</button></div>
-        <p id="settings-status" class="github-note" role="status">Loading model connection…</p>
-      </form>
-      <form id="github-settings-form" autocomplete="off">
-        <h2>GitHub</h2>
-        <p class="github-note">Public repositories work immediately. For private repos, use a token limited to your selected repos with Pull requests: Read permission.</p>
-        <label class="github-field">GitHub token <span id="github-token-state"></span>
-          <input id="github-token" type="password" aria-label="GitHub token" autocomplete="off" placeholder="Optional for public repositories">
-        </label>
-        <label class="github-option"><input id="clear-github-token" type="checkbox"> Remove saved GitHub token</label>
-        <div class="github-controls"><button id="save-github" type="submit">Save GitHub</button><button id="test-github" type="button">Check repository access</button></div>
-        <p id="github-connection-status" class="github-note" role="status"></p>
-      </form>
+    <div class="connection-tabs" role="tablist" aria-label="Connection settings">
+      <button id="connection-model-tab" type="button" role="tab" aria-selected="true" aria-controls="settings-form">AI model</button>
+      <button id="connection-github-tab" type="button" role="tab" aria-selected="false" aria-controls="github-settings-form" tabindex="-1">GitHub</button>
     </div>
-    <p class="github-note">Keys are saved only on this computer, never returned to the browser. Pause the watch before changing connections.</p>
-    <button id="reload-settings" type="button">Reload saved connections</button>
+    <div class="connection-content">
+      <form id="settings-form" role="tabpanel" aria-labelledby="connection-model-tab" autocomplete="off">
+        <label class="github-field">Provider
+          <select id="llm-provider" aria-label="LLM connection"><option value="brev">Brev / Ollama</option><option value="cisco">Cisco lab proxy</option><option value="paid">API provider</option></select>
+        </label>
+        <label class="github-field">Access key <span id="llm-key-state"></span>
+          <input id="llm-api-key" type="password" aria-label="Model access key" autocomplete="off" placeholder="Blank keeps your saved key">
+        </label>
+        <p id="provider-help" class="github-note"></p>
+        <details id="advanced-model" class="connection-advanced"><summary>Advanced</summary>
+          <label class="github-field">Model name <input id="llm-model" aria-label="LLM model" maxlength="200" required></label>
+          <label id="llm-url-field" class="github-field">Service URL <input id="llm-base-url" type="url" aria-label="LLM base URL"></label>
+          <label class="github-field">Concurrent calls <input id="llm-concurrency" type="number" min="1" max="16" required></label>
+          <label class="github-option"><input id="clear-llm-api-key" type="checkbox"> Remove saved key</label>
+          <div class="github-controls"><button id="use-team-model" class="subtle" type="button">Use team defaults</button><button id="reload-settings" class="subtle" type="button">Restore saved settings</button></div>
+        </details>
+        <button id="save-settings" class="primary" type="submit" disabled>Test connection</button>
+        <p id="settings-status" class="connection-status" role="status">Loading…</p>
+      </form>
+      <form id="github-settings-form" role="tabpanel" aria-labelledby="connection-github-tab" autocomplete="off" hidden>
+        <label class="github-field">Access method
+          <select id="github-auth-mode"><option value="public">Public repositories · no token</option><option value="token">GitHub token</option></select>
+        </label>
+        <label id="github-token-field" class="github-field">Token <span id="github-token-state"></span>
+          <input id="github-token" type="password" aria-label="GitHub token" autocomplete="off" placeholder="Blank keeps your saved token">
+        </label>
+        <p id="github-access-help" class="github-note"></p>
+        <details id="github-token-options" class="connection-advanced"><summary>Advanced</summary>
+          <label class="github-option"><input id="clear-github-token" type="checkbox"> Remove saved token</label>
+        </details>
+        <button id="save-github" class="primary" type="submit" disabled>Test access</button>
+        <p id="github-connection-status" class="connection-status" role="status"></p>
+      </form>
+      <p id="connection-lock-note" class="github-note" role="status" hidden></p>
+    </div>
   </details>
 
   <section class="github-panel" aria-labelledby="github-heading">
-    <h2 id="github-heading">Automatic PR reviews</h2>
+    <h2 id="github-heading">Pull requests</h2>
     <form id="repository-form" class="github-controls">
       <label class="github-field">Repository
-        <input id="repository" aria-label="GitHub repository" value="KProgramm/council" placeholder="owner/repository" required>
+        <input id="repository" aria-label="GitHub repository" placeholder="owner/repository or GitHub URL" required>
       </label>
-      <button class="primary" id="watch-repository" type="submit">Watch and review</button>
+      <button id="load-prs" type="button">Load open PRs</button>
+      <label class="github-field review-scope">Review scope
+        <select id="review-mode"><option value="selected">Selected PRs only</option><option value="all">All open PRs automatically</option></select>
+      </label>
+      <button class="primary" id="watch-repository" type="submit">Start selected reviews</button>
       <button id="stop-watching" type="button" disabled>Pause</button>
       <label class="github-option"><input id="follow-reviews" type="checkbox" checked> Follow live reviews</label>
     </form>
-    <p id="watch-status" class="github-note" role="status">Connect once. Council queues open PRs and changed diffs, then reviews them one at a time.</p>
-    <p class="github-note">Checks every two minutes. Continues with this tab closed while the Council server is running. Draft PRs are skipped.</p>
+    <p id="scope-help" class="github-note">Load open PRs, then select what Council should review. Loading the list does not run the AI.</p>
+    <p id="pr-selection-status" class="github-note" role="status"></p>
+    <ul id="pr-picker" aria-label="Open PR selection" hidden></ul>
+    <p id="watch-status" class="github-note" role="status">No repository watch is running.</p>
+    <details class="connection-advanced"><summary>How reviews work</summary>
+      <p class="github-note">Checks every two minutes and reviews one PR at a time. Selected PRs are reviewed again when their diff changes; all-PR mode also includes future PRs. Drafts are skipped. Continues while the Council server runs, even with this tab closed. Results stay in Council; nothing is posted to GitHub.</p>
+    </details>
+    <label class="github-field review-scope">Queue filter
+      <select id="queue-filter"><option value="all">All reviews</option><option value="pending">Queued / reviewing</option><option value="completed">Completed</option><option value="attention">Failed / skipped</option><option value="ignored">Ignored</option></select>
+    </label>
+    <p id="queue-summary" class="github-note"></p>
     <ul id="pr-inbox" aria-label="Review queue and results" hidden></ul>
     <p id="github-status" class="github-note" role="status"></p>
     <div id="pr-source" hidden></div>
@@ -95,6 +110,7 @@
 </main>
 
 <script src="app.js"></script>
+<script src="connections.js"></script>
 <script src="github.js"></script>
 <script src="settings.js"></script>
 </body>

@@ -1,5 +1,6 @@
 import json
 import re
+from pathlib import Path
 
 from agents.base import call_llm
 from contracts.schema import Message, TradeoffMap
@@ -25,13 +26,7 @@ async def build_map(transcript: list[Message], outcome: str) -> TradeoffMap:
     if diff_message is None:
         raise ValueError("The transcript must include the round-0 diff message")
 
-    system_prompt = (
-        "Summarize the debate neutrally. Do not choose a winning position or invent evidence. "
-        "Return only a JSON object matching this JSON Schema: "
-        f"{json.dumps(TradeoffMap.model_json_schema(), ensure_ascii=True)}. "
-        "Every unresolved item must explicitly name two reviewer agents, for example "
-        '"security vs performance: ...". Use empty arrays when there is nothing to report.'
-    )
+    system_prompt = (Path(__file__).resolve().parents[1] / 'prompts' / 'tradeoff_summary.md').read_text(encoding='utf-8')
     user_content = json.dumps(
         {
             "review_id": diff_message.review_id,

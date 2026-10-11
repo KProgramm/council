@@ -24,7 +24,7 @@ class LocalSecurityTests(unittest.IsolatedAsyncioTestCase):
         send = AsyncMock()
         receive = AsyncMock()
         for origin, allowed in [('http://localhost:8000', True), ('https://evil.test', False)]:
-            ws = WebSocket({'type': 'websocket', 'scheme': 'ws', 'path': '/replay', 'query_string': b'',
+            ws = WebSocket({'type': 'websocket', 'scheme': 'ws', 'path': '/ws/test-review', 'query_string': b'',
                             'server': ('localhost', 8000), 'client': ('127.0.0.1', 1234),
                             'headers': [(b'host', b'localhost:8000'), (b'origin', origin.encode())]}, receive, send)
             self.assertEqual(await local_socket(ws), allowed)

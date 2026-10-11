@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 from fastapi import HTTPException
 from contracts.schema import Message, TradeoffMap
+from agents.validation import REVIEWERS
 from server.watcher import RepositoryWatch
 
 
@@ -31,7 +32,9 @@ class WatcherTests(unittest.IsolatedAsyncioTestCase):
             return {'pull_request': dict(pr), 'diff': 'diff --git a/x b/x\n-old\n+new'}
         async def run(diff, review_id, publish):
             await publish(Message(review_id=review_id, round=0, agent='system', kind='diff', text=diff))
-            verdict = TradeoffMap(review_id=review_id, outcome='consensus', final_positions={}, resolved=[], unresolved=[], human_decisions=[])
+            for name in REVIEWERS:
+                await publish(Message(review_id=review_id, round=1, agent=name, kind='assessment', position='approve', confidence=0.8, text='No concerns.'))
+            verdict = TradeoffMap(review_id=review_id, outcome='consensus', final_positions={name: 'approve' for name in REVIEWERS}, resolved=[], unresolved=[], human_decisions=[])
             await publish(Message(review_id=review_id, round=1, agent='system', kind='verdict', text=verdict.model_dump_json()))
         self.watch = RepositoryWatch(self.path, run, list_prs=listing, load_pr=load)
         self.original_runner = run
@@ -203,3 +206,93 @@ class WatcherTests(unittest.IsolatedAsyncioTestCase):
     async def test_second_server_cannot_run_against_the_same_queue(self):
         with self.assertRaisesRegex(RuntimeError, 'single server'):
             RepositoryWatch(self.path, self.original_runner)
+
+    async def test_selected_scope_reviews_only_selected_prs_and_their_new_revisions(self):
+        await self.watch.connect('o/r', 'selected', [2])
+        await self.watch.process_one()
+        self.pulls.extend([source(4)])
+        self.pulls[0] = source(2, 'c')
+        await self.watch.poll_once()
+        await self.watch.process_one()
+        self.assertEqual(self.calls, [source(2)['url'], source(2)['url']])
+        self.assertFalse(await self.watch.process_one())
+        self.assertEqual(self.watch.config()['selected_prs'], [2])
+
+    async def test_invalid_selection_leaves_existing_watch_unchanged(self):
+        await self.watch.connect('o/r')
+        before = self.watch.config()
+        for numbers in ([], [3], [999]):
+            with self.assertRaises(HTTPException):
+                await self.watch.connect('o/r', 'selected', numbers)
+            self.assertEqual(self.watch.config(), before)
+
+    async def test_changing_scope_holds_excluded_queue_and_reselection_restores_it(self):
+        await self.watch.connect('o/r')
+        await self.watch.connect('o/r', 'selected', [2])
+        self.assertEqual(self.watch.status()['counts']['ignored'], 1)
+        await self.watch.process_one()
+        self.assertEqual(self.calls, [source(2)['url']])
+        await self.watch.connect('o/r', 'selected', [1])
+        await self.watch.process_one()
+        self.assertEqual(self.watch.status()['counts']['completed'], 2)
+
+    async def test_ignore_persists_across_pushes_restart_and_can_be_undone(self):
+        await self.watch.connect('o/r')
+        job = next(j for j in self.watch.status()['jobs'] if j['pull_request']['number'] == 2)
+        self.watch.ignore(job['id'])
+        self.pulls[0] = source(2, 'c')
+        await self.watch.poll_once()
+        await self.watch.process_one()
+        self.assertEqual(self.calls, [source(1)['url']])
+        await self.watch.close()
+        self.watch = RepositoryWatch(self.path, self.original_runner, list_prs=self.watch.list_prs, load_pr=self.watch.load_pr)
+        self.assertEqual(self.watch.status()['ignored_prs'], [2])
+        self.watch.include(job['id'])
+        await self.watch.poll_once()
+        await self.watch.process_one()
+        self.assertEqual(self.watch.status()['counts']['completed'], 2)
+        self.assertEqual(self.watch.status()['ignored_prs'], [])
+
+    async def test_ignore_during_diff_download_prevents_model_call(self):
+        await self.watch.connect('o/r', 'selected', [2])
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = self.watch.load_pr
+        async def load(req):
+            entered.set()
+            await release.wait()
+            return await original(req)
+        self.watch.load_pr = load
+        self.watch.runner = AsyncMock()
+        task = asyncio.create_task(self.watch.process_one())
+        await entered.wait()
+        job = self.watch.status()['jobs'][0]
+        self.watch.ignore(job['id'])
+        release.set()
+        await task
+        self.watch.runner.assert_not_awaited()
+        self.assertEqual(self.watch.detail(job['id'])['status'], 'ignored')
+
+    async def test_selected_scope_survives_restart(self):
+        await self.watch.connect('o/r', 'selected', [2])
+        await self.watch.close()
+        self.watch = RepositoryWatch(self.path, self.original_runner, list_prs=self.watch.list_prs, load_pr=self.watch.load_pr)
+        self.assertEqual(self.watch.config()['mode'], 'selected')
+        self.assertEqual(self.watch.config()['selected_prs'], [2])
+        await self.watch.process_one()
+        self.assertEqual(self.calls, [source(2)['url']])
+
+    async def test_restart_preserves_but_flags_invalid_historical_result(self):
+        await self.watch.connect('o/r')
+        await self.watch.process_one()
+        completed = next(job for job in self.watch.status()['jobs'] if job['status'] == 'completed')
+        messages = self.watch.detail(completed['id'])['messages']
+        messages[1]['position'] = None
+        self.watch.db.execute('UPDATE jobs SET messages=? WHERE id=?', (json.dumps(messages), completed['id']))
+        self.watch.db.commit()
+        await self.watch.close()
+        self.watch = RepositoryWatch(self.path, self.original_runner, list_prs=self.watch.list_prs, load_pr=self.watch.load_pr)
+        result = self.watch.detail(completed['id'])
+        self.assertEqual(result['status'], 'failed')
+        self.assertFalse(result['valid_result'])
+        self.assertEqual(result['messages'], messages, 'The original transcript remains available for inspection')
+        self.assertFalse(self.watch.status()['enabled'])
