@@ -1,7 +1,7 @@
 /* PR Council UI (G5)
  *
  * Every message here is a real `Message` from contracts/schema.py, the same shape the
- * server streams over WebSocket. Replay and live runs go through the same handle() path.
+ * server streams over WebSocket. Every review runs against the configured model.
  *
  *   Message: { id, review_id, round, agent, kind, position, confidence, claims, references, text, ts }
  *   - kind "diff"    (round 0): text is the raw diff
@@ -16,8 +16,6 @@ const HTTP_BASE = SAME_ORIGIN ? "" : "http://localhost:8000";
 const WS_BASE = SAME_ORIGIN
   ? (location.protocol === "https:" ? "wss://" : "ws://") + location.host
   : "ws://localhost:8000";
-const FIXTURE_URL = HTTP_BASE + "/fixtures/transcripts/demo.json";
-const FALLBACK_DELAY_MS = 1500;
 const ROUNDS = [1, 2, 3];
 
 /* Agent keys must match AgentName in contracts/schema.py exactly. */
@@ -48,12 +46,12 @@ const el = (tag, cls, text) => {
 
 /* ---------- State ---------- */
 let runId = 0;          // bumped on every reset; late callbacks from an old run are ignored
-let timers = [];
 let socket = null;
 let lastRound = null;
 let lastPosition = {};  // agent -> most recent position (to detect a changed mind)
 let messageCount = 0;
 let sawVerdict = false;
+let debateBusy = false;
 
 /* ---------- Rendering ---------- */
 function renderDiff(text) {
@@ -186,8 +184,15 @@ function addVerdict(m) {
   }
 
   const esc = t.outcome === "escalate";
-  map.className = esc ? "escalate" : "consensus";
-  map.appendChild(el("h2", "", "Tradeoff map: " + (esc ? "escalate" : "consensus")));
+  const positions = Object.values(t.final_positions || {});
+  const agreement = !esc && positions.length === Object.keys(AGENTS).length && positions.every(position => position === positions[0]) ? positions[0] : null;
+  map.className = esc ? 'escalate' : agreement === 'block' ? 'blocked' : 'consensus';
+  map.appendChild(el('h2', '', esc ? 'Human review needed' : agreement === 'block' ? 'Council agrees: block this PR'
+    : agreement === 'approve' ? 'Council agrees: approve' : agreement === 'approve_with_changes' ? 'Council agrees: changes required' : 'Review needs attention'));
+  if (!esc && !agreement) {
+    map.className = 'escalate';
+    map.appendChild(el('div', 'row', 'The council did not record a complete agreement. Review the transcript before deciding.'));
+  }
 
   const add = (label, items) => {
     if (!items || !items.length) return;
@@ -213,8 +218,10 @@ function handle(m) {
 }
 
 function setBusy(busy) {
+  debateBusy = busy;
   $("run").disabled = busy;
-  $("replay").disabled = busy;
+  if (typeof updateGitHubControls === "function") updateGitHubControls();
+  if (typeof lockConnections === "function") lockConnections();
 }
 
 function finish(text) {
@@ -224,8 +231,6 @@ function finish(text) {
 
 function reset() {
   runId++;
-  timers.forEach(clearTimeout);
-  timers = [];
   if (socket) { socket.onmessage = socket.onclose = socket.onerror = null; socket.close(); socket = null; }
   lastRound = null;
   lastPosition = {};
@@ -238,7 +243,7 @@ function reset() {
   return runId;
 }
 
-/* ---------- Streaming from the server (Replay and live share this) ---------- */
+/* ---------- Stream a real review ---------- */
 function stream(url, id, { onFail }) {
   const ws = new WebSocket(url);
   socket = ws;
@@ -252,66 +257,27 @@ function stream(url, id, { onFail }) {
       : `Debate in progress: ${messageCount} message${messageCount === 1 ? "" : "s"}`;
   };
   ws.onerror = () => { /* onclose always follows; handle it there */ };
-  ws.onclose = () => {
+  ws.onclose = event => {
     if (id !== runId) return;
     socket = null;
-    if (messageCount === 0) return onFail();
-    finish(sawVerdict ? "Verdict reached." : "Connection closed before a verdict arrived.");
+    if (messageCount === 0) return event.reason ? finish(event.reason) : onFail();
+    finish(sawVerdict ? "Verdict reached." : event.reason || "The review ended before a verdict arrived. Check the model connection.");
   };
-}
-
-/* ---------- Replay ---------- */
-// Primary: the server's /replay WebSocket. If it isn't reachable, fetch the fixture file
-// and play it locally with setTimeout (G5 "step 1", no backend needed beyond static files).
-function replay() {
-  const id = reset();
-  setBusy(true);
-  $("status").textContent = "Council convened.";
-  stream(WS_BASE + "/replay", id, { onFail: () => replayFromFixture(id) });
-}
-
-async function replayFromFixture(id) {
-  try {
-    const res = await fetch(FIXTURE_URL);
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const data = await res.json();
-    if (id !== runId) return;
-    const msgs = data.messages.slice();
-    if (data.tradeoff_map) {   // same verdict Message the server builds
-      msgs.push({
-        review_id: data.tradeoff_map.review_id, round: msgs[msgs.length - 1].round,
-        agent: "system", kind: "verdict", text: JSON.stringify(data.tradeoff_map),
-      });
-    }
-    $("status").textContent = "Server stream unavailable. Playing the fixture locally.";
-    msgs.forEach((m, i) => timers.push(setTimeout(() => {
-      if (id !== runId) return;
-      handle(m);
-      if (i === msgs.length - 1) finish("Verdict reached.");
-    }, i * FALLBACK_DELAY_MS + 200)));
-  } catch (err) {
-    finish("Could not load the demo. Start the server (uvicorn server.app:app) and open http://localhost:8000.");
-  }
 }
 
 /* ---------- Live ---------- */
 async function runLive(diff) {
+  if (typeof modelHasChanges === 'function' && modelHasChanges()) {
+    $('connection-settings').open = true;
+    $('status').textContent = 'Save your model changes before starting a review.';
+    return;
+  }
   const id = reset();
   setBusy(true);
   renderDiff(diff);
   $("status").textContent = "Contacting the council…";
   try {
-    const ctl = new AbortController();
-    const timeout = setTimeout(() => ctl.abort(), 5000);
-    const res = await fetch(HTTP_BASE + "/reviews", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ diff }),
-      signal: ctl.signal,
-    });
-    clearTimeout(timeout);
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const { review_id } = await res.json();
+    const { review_id } = await requestJSON('/reviews', { diff });
     if (id !== runId) return;
     $("status").textContent = "Live debate in progress.";
     // The server replays history to late sockets, so connecting after POST loses nothing.
@@ -320,16 +286,15 @@ async function runLive(diff) {
     });
   } catch (err) {
     if (id !== runId) return;
-    finish("Could not reach the server at " + (HTTP_BASE || location.origin) + ". Press Replay to watch the demo.");
+    finish(err.message);
   }
 }
 
 /* ---------- Wiring ---------- */
-$("replay").onclick = replay;
 $("run").onclick = () => {
   const d = $("input").value.trim();
   if (!d) {
-    $("status").textContent = "Paste a diff first, or press Replay to watch the demo.";
+    $("status").textContent = "Paste a diff first, or select a GitHub PR above.";
     $("input").focus();
     return;
   }
