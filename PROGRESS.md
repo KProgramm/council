@@ -55,8 +55,10 @@ python3 -c "import json; from contracts.schema import Message, TradeoffMap; d=js
 ---
 
 ## Shiven: G3 Convergence + tradeoff map — DONE, merged to main (PR #5)
+## Shiven: G3 Convergence + tradeoff map — DONE, merged to main
 
-**Live:** merged via `shiven/convergence` (PR #5, including hardening commit `c7ac996`). Convergence checks latest reviewer positions, prioritizes critical escalations, requires matching positions at confidence >= 0.7 for consensus, and escalates after round 3. `run_council` builds and publishes a system verdict containing a validated `TradeoffMap`. Hardening retries one invalid map response, then falls back to a safe transcript-review map. Model-supplied message IDs and timestamps are discarded.
+**Live:** merged via `shiven/convergence` (PR #5, including hardening commit c7ac996). Convergence checks latest reviewer positions, prioritizes critical escalations, requires matching positions at confidence >= 0.7 for consensus, and escalates after round 3. `run_council` builds and publishes a system verdict containing a validated `TradeoffMap`. Hardening retries one invalid map response, then falls back to a safe transcript-review map. Model-supplied message IDs and timestamps are discarded.
+**Live:** convergence checks latest reviewer positions, prioritizes critical escalations, requires matching positions at confidence >= 0.7 for consensus, and escalates after round 3. `run_council` builds and publishes a system verdict containing a validated `TradeoffMap`. Invalid map output gets one corrective retry, then a safe transcript-review fallback. Model-supplied message IDs and timestamps are discarded.
 
 **Departures from plan:** map generation shares G1's configured provider, semaphore, and response cache. The safe fallback asks a human to inspect the transcript; for an escalation, it names a reviewer pair only when their final positions differ.
 
@@ -65,8 +67,10 @@ python3 -c "import json; from contracts.schema import Message, TradeoffMap; d=js
 .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python -m agents.runtime fixtures/diffs/demo.diff
 ```
-The G1/G3 offline suite had 13 passing tests at G3 merge; the current combined suite has 18 tests, including G8. Cisco live runs produced all three debate rounds and a verdict after the hardening changes.
+The offline suite currently has 13 passing tests. Live runs (Cisco, via G6's SLIM run) produced all three debate rounds and a verdict after the hardening changes.
+The offline suite currently has 18 passing tests. The live G8 demo evaluation also exercised the post-G3 council and verdict path.
 
+**Unblocks:** G8 evaluation.
 **Unblocks:** G8 evaluation.
 
 ---
@@ -85,8 +89,6 @@ The G1/G3 offline suite had 13 passing tests at G3 merge; the current combined s
 The live command makes LLM calls. Nico still needs to add real diffs/ground truth and manually spot-check three evaluation judgments when G7 is ready.
 
 **Unblocks:** the evidence chart and comparison for the pitch.
-
----
 
 ## G6: SLIM transport — DONE on branch krish/slim (PR pending)
 
@@ -108,7 +110,7 @@ WORKFLOW_API_KEY=local SLIM_SHARED_SECRET=<32+ chars> docker compose up -d slim
 # then in council/, with BUS=slim and the same SLIM_SHARED_SECRET in .env, start the server
 ```
 
-**Unblocks:** G1 is merged, so `BUS=slim` can now be exercised through the server path described above.
+**Unblocks:** once G1 merges, `BUS=slim` in `.env` should give the same council output.
 
 ---
 
@@ -132,6 +134,7 @@ uvicorn server.app:app --reload
 ```
 
 **Unblocks:** G9 slides and screenshots (Mayu), G10 voices (Mayu), and the 7:00 PM end-to-end checkpoint once live mode is confirmed.
+**Unblocks:** Mayu's G9 evidence slide once G7 expands the dataset and results are rerun.
 
 ---
 
