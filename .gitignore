@@ -1,5 +1,6 @@
 .env
 .venv/
 __pycache__/
+.cache/
 eval/results/*.json
 .DS_Store
