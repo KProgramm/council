@@ -6,15 +6,18 @@
 #   GET  /               the web/ UI; /fixtures/... is served too for UI step 1
 import asyncio
 import json
+import os
 import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
+from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from contracts.schema import Message, TradeoffMap
 
+load_dotenv()  # so BUS / SLIM_* from .env are visible to make_bus()
 ROOT = Path(__file__).resolve().parent.parent
 DEMO_TRANSCRIPT = ROOT / "fixtures/transcripts/demo.json"
 REPLAY_DELAY = 1.5  # seconds between replayed messages
@@ -74,15 +77,29 @@ async def replay_demo(stream: ReviewStream, review_id: str) -> None:
         await asyncio.sleep(REPLAY_DELAY)
 
 
+def make_bus(review_id: str):
+    """Pick the transport from .env: BUS=memory (default) or BUS=slim."""
+    if os.getenv("BUS", "memory") == "slim":
+        from transport.slim_bus import SlimBus
+
+        return SlimBus(review_id)
+    from transport.memory_bus import MemoryBus
+
+    return MemoryBus()
+
+
 async def run_review(diff: str, review_id: str, stream: ReviewStream) -> None:
     """Run the real council if G1 has landed; otherwise replay the demo transcript."""
     try:
         from agents.runtime import run_council
-        from transport.memory_bus import MemoryBus
 
-        bus = MemoryBus()
+        bus = make_bus(review_id)
         bus.subscribe(stream.publish)
-        await run_council(diff, bus, review_id)
+        try:
+            await run_council(diff, bus, review_id)
+        finally:
+            if hasattr(bus, "close"):  # SlimBus holds a SLIM session open
+                await bus.close()
     except NotImplementedError:
         # Runtime is still a stub. Only fall back if nothing real got published,
         # so we never mix a half-run live debate with fake messages.
