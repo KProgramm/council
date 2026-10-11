@@ -48,6 +48,51 @@ def _provider_settings() -> tuple[str, dict[str, str]]:
     return model, options
 
 
+async def call_llm(system_prompt: str, user_content: str, use_cache: bool = True) -> str:
+    model, options = _provider_settings()
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+    cache_payload = json.dumps(
+        {"model": model, "options": options, "messages": messages},
+        sort_keys=True,
+    )
+    cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()
+    cache_path = Path(__file__).resolve().parents[1] / ".cache" / f"{cache_key}.json"
+
+    if use_cache:
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(cached.get("response"), str):
+                return cached["response"]
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass
+
+    import litellm
+
+    async with _get_semaphore():
+        response = await litellm.acompletion(
+            model=model,
+            messages=messages,
+            response_format={"type": "json_object"},
+            **options,
+        )
+    content = response.choices[0].message.content
+    if not isinstance(content, str):
+        return ""
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps({"response": content}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    return content
+
+
 class ReviewAgent:
     """One reviewer. Reads prompts/{name}.md every round, hears every bus message, decides whether to speak."""
 
@@ -61,48 +106,7 @@ class ReviewAgent:
         self.transcript.append(msg)
 
     async def _complete(self, system_prompt: str, user_content: str, use_cache: bool = True) -> str:
-        model, options = _provider_settings()
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ]
-        cache_payload = json.dumps(
-            {"model": model, "options": options, "messages": messages},
-            sort_keys=True,
-        )
-        cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()
-        cache_path = Path(__file__).resolve().parents[1] / ".cache" / f"{cache_key}.json"
-
-        if use_cache:
-            try:
-                cached = json.loads(cache_path.read_text(encoding="utf-8"))
-                if isinstance(cached.get("response"), str):
-                    return cached["response"]
-            except (OSError, json.JSONDecodeError, AttributeError):
-                pass
-
-        import litellm
-
-        async with _get_semaphore():
-            response = await litellm.acompletion(
-                model=model,
-                messages=messages,
-                response_format={"type": "json_object"},
-                **options,
-            )
-        content = response.choices[0].message.content
-        if not isinstance(content, str):
-            return ""
-
-        try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(
-                json.dumps({"response": content}),
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
-        return content
+        return await call_llm(system_prompt, user_content, use_cache=use_cache)
 
     async def speak(self, round_num: int) -> Message | None:
         diff_message = next(
@@ -141,6 +145,8 @@ class ReviewAgent:
                     return None
                 if not isinstance(payload, dict):
                     continue
+                payload.pop("id", None)
+                payload.pop("ts", None)
                 payload.update(
                     review_id=diff_message.review_id,
                     agent=self.name,

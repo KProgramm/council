@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agents.base import ReviewAgent
 from council import convergence
+from council.tradeoff_map import build_map
 from contracts.bus import Bus
 from contracts.schema import AgentName, Message
 
@@ -35,7 +36,10 @@ async def run_council(diff: str, bus: Bus, review_id: str) -> list[Message]:
         )
     )
 
+    outcome: str | None = None
+    final_round = 0
     for round_num in range(1, 4):
+        final_round = round_num
         responses = await asyncio.gather(
             *(agent.speak(round_num) for agent in agents)
         )
@@ -43,9 +47,25 @@ async def run_council(diff: str, bus: Bus, review_id: str) -> list[Message]:
             if response is not None:
                 await bus.publish(response)
 
-        if convergence.check(transcript) is not None:
+        outcome = convergence.check(transcript)
+        if outcome is not None:
             break
+        if round_num == 3:
+            outcome = "escalate"
 
+    if outcome is None:
+        raise RuntimeError("The council ended without a convergence outcome")
+
+    tradeoff_map = await build_map(transcript, outcome)
+    await bus.publish(
+        Message(
+            review_id=review_id,
+            round=final_round,
+            agent="system",
+            kind="verdict",
+            text=tradeoff_map.model_dump_json(),
+        )
+    )
     return transcript
 
 
