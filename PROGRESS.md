@@ -81,6 +81,29 @@ The offline suite currently has 13 passing tests. A full live run previously pro
 
 ---
 
+## Mayu: G5 Debate UI — DONE (Replay verified), live mode not yet tested against the real council
+
+**Live:** `web/index.html`, `web/app.js`, `web/styles.css`, served by the G4 server at `http://localhost:8000`. Three panels (diff, channel, position tracker) plus the tradeoff map and a paste box with **Run council** and **Replay** buttons. Verified in a browser against a real uvicorn server: Replay streams the full fixture over `WS /replay` (12 debate messages, 3 rounds), cards show position badge, confidence bar, claims, and "↳ challenges Security" style reference lines in the responding agent's color, 4 tracker cells highlight as changed minds, and the verdict renders as an amber ESCALATE map with resolved items, unresolved items, and human decisions. If the `/replay` socket is unreachable, Replay falls back to fetching `/fixtures/transcripts/demo.json` and playing it locally every 1.5 s.
+
+**Departures from plan:**
+- The first draft used its own message shape (`type`, `to`, `verdict`, agent key `compat`). It was rewritten to the frozen `Message` contract: `kind`, `references[].agent` / `stance`, agent key `compatibility`, and the verdict read as a `TradeoffMap` JSON string in `text`. **Anything that changes the contract needs a matching UI change.**
+- The tracker shows `✓` approve, `~` approve_with_changes, `✗` block, `!` escalate. A "changed mind" compares against the agent's last stated position, so it still works if an agent passes in a round. A pass leaves the cell as `·`.
+- The stylesheet is `web/styles.css`, as in PLAN.md.
+- Run council uses same-origin URLs, so open the app through the server, not by double-clicking the file.
+
+**Not verified:** live mode with the real `run_council` (G1/G3 merged after this was tested). Before this was tested, `POST /reviews` fell back to the demo transcript. **Next check:** with a working `.env`, paste a diff, press Run council, and confirm the channel, tracker, and verdict fill in as messages stream.
+
+**Test it:**
+```bash
+pip install -r requirements.txt
+uvicorn server.app:app --reload
+# open http://localhost:8000 and press Replay
+```
+
+**Unblocks:** G9 slides and screenshots (Mayu), G10 voices (Mayu), and the 7:00 PM end-to-end checkpoint once live mode is confirmed.
+
+---
+
 ## Template for the next entries
 
 ```
