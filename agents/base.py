@@ -28,21 +28,26 @@ def _get_semaphore() -> asyncio.Semaphore:
     return _semaphore
 
 
-def _provider_settings() -> tuple[str, dict[str, str]]:
+def _provider_settings() -> tuple[str, dict]:
     _load_environment()
     provider = os.getenv("LLM_PROVIDER", "brev").lower()
+    scoped_key = os.getenv({"brev": "BREV_API_KEY", "cisco": "CISCO_API_KEY", "paid": "PAID_API_KEY"}.get(provider, ""), os.getenv("LLM_API_KEY", "")).strip()
     if provider == "brev":
         model = f"ollama/{os.environ['OLLAMA_MODEL']}"
         options = {"api_base": os.environ["OLLAMA_BASE_URL"]}
+        key = scoped_key
+        if key:
+            # Ollama completion requires explicit headers; chat also accepts api_key.
+            options.update(api_key=key, extra_headers={"Authorization": f"Bearer {key}"})
     elif provider == "cisco":
         model = f"litellm_proxy/{os.environ['LLM_MODEL']}"
         options = {
             "api_base": os.environ["LLM_BASE_URL"],
-            "api_key": os.environ["LLM_API_KEY"],
+            "api_key": scoped_key,
         }
     elif provider == "paid":
         model = os.environ["LLM_MODEL"]
-        options = {"api_key": os.environ["LLM_API_KEY"]}
+        options = {"api_key": scoped_key}
     else:
         raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
     return model, options
@@ -61,6 +66,8 @@ async def call_llm(system_prompt: str, user_content: str, use_cache: bool = True
     cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()
     cache_path = Path(__file__).resolve().parents[1] / ".cache" / f"{cache_key}.json"
 
+    if cache_path.parent.exists():
+        cache_path.parent.chmod(0o700)
     if use_cache:
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -83,11 +90,13 @@ async def call_llm(system_prompt: str, user_content: str, use_cache: bool = True
         return ""
 
     try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        cache_path.parent.chmod(0o700)
         cache_path.write_text(
             json.dumps({"response": content}),
             encoding="utf-8",
         )
+        cache_path.chmod(0o600)
     except OSError:
         pass
     return content

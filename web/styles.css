@@ -24,6 +24,30 @@ main{max-width:1280px;margin:0 auto;padding:20px 16px 28px}
 header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 16px;margin-bottom:14px}
 h1{font-size:22px;font-weight:600;letter-spacing:-.01em;margin:0}
 #status{color:var(--mute);font-size:14px}
+/* GitHub inbox */
+.github-panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;margin-bottom:14px}
+.github-panel h2{font-size:16px;margin:0 0 8px}
+.github-controls{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px}
+.github-field{flex:1 1 300px;font-size:13px;color:var(--mute)}
+.github-field input{display:block;width:100%;margin-top:4px;min-height:44px;padding:10px 12px;font:14px var(--sans);color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px}
+.github-field select{display:block;width:100%;margin-top:4px;min-height:44px;padding:10px 12px;font:14px var(--sans);color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px}
+#connection-settings summary{cursor:pointer;font-weight:600}
+.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:12px 0}
+.settings-grid .github-field{min-width:0}
+.settings-grid input,.settings-grid select{box-sizing:border-box}
+.settings-grid [hidden]{display:none}
+@media(max-width:600px){.settings-grid{grid-template-columns:minmax(0,1fr)}}
+.github-option{display:flex;align-items:center;gap:6px;min-height:44px;font-size:13px}
+.github-note{font-size:13px;color:var(--mute);margin:6px 0}
+#pr-inbox{list-style:none;padding:0;margin:10px 0;max-height:200px;overflow:auto;border-top:1px solid var(--line)}
+.pr-item{display:flex;gap:12px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding:8px}
+.pr-item>div{min-width:0;overflow-wrap:anywhere}
+.pr-item button{flex-shrink:0;padding:0 12px;min-height:36px}
+.pr-item.selected{background:var(--hunkbg)}
+.pr-title{font-size:14px;font-weight:500}
+#pr-source{margin-top:10px;border-left:3px solid var(--compat);padding-left:10px;overflow-wrap:anywhere}
+#pr-source a{color:var(--compat);font-weight:600;text-decoration:none}
+#pr-source a:hover{text-decoration:underline}
 .board{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,.9fr);gap:12px}
 section.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;display:flex;flex-direction:column;min-height:0}
 .panel>h2{font-size:14px;font-weight:600;margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
@@ -90,3 +114,11 @@ button:disabled{opacity:.5;cursor:default}
 :focus-visible{outline:3px solid var(--compat);outline-offset:2px}
 @media (max-width:900px){.board{grid-template-columns:minmax(0,1fr)}.scroll{height:320px}.scroll.auto{height:auto}}
 @media (prefers-reduced-motion:reduce){.card,td.cell.changed{animation:none}}
+.connection-columns{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:18px}
+.connection-columns form{min-width:0}
+.connection-columns h2{margin:0 0 8px}
+.connection-columns .github-field{display:block;margin:12px 0}
+#pr-inbox{max-height:300px;overflow:auto}
+.review-error{font-size:13px;color:var(--sec);margin-top:4px}
+.manual-review{margin-top:16px}
+@media(max-width:700px){.connection-columns{grid-template-columns:1fr;gap:18px}}

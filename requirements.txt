@@ -3,5 +3,6 @@ uvicorn[standard]
 pydantic
 litellm
 python-dotenv
+httpx
 matplotlib
 slim-bindings==1.4.1
