@@ -1,0 +1,67 @@
+diff --git a/django/contrib/admin/checks.py b/django/contrib/admin/checks.py
+index 94e700cf68c5..9937273c2859 100644
+--- a/django/contrib/admin/checks.py
++++ b/django/contrib/admin/checks.py
+@@ -1,4 +1,5 @@
+ import collections
++import contextlib
+ from itertools import chain
+ 
+ from django.apps import apps
+@@ -21,10 +22,9 @@ def _issubclass(cls, classinfo):
+     issubclass() variant that doesn't raise an exception if cls isn't a
+     class.
+     """
+-    try:
++    with contextlib.suppress(TypeError):
+         return issubclass(cls, classinfo)
+-    except TypeError:
+-        return False
++    return False
+ 
+ 
+ def _contains_subclass(class_path, candidate_paths):
+@@ -34,13 +34,9 @@ def _contains_subclass(class_path, candidate_paths):
+     """
+     cls = import_string(class_path)
+     for path in candidate_paths:
+-        try:
+-            candidate_cls = import_string(path)
+-        except ImportError:
+-            # ImportErrors are raised elsewhere.
+-            continue
+-        if _issubclass(candidate_cls, cls):
+-            return True
++        with contextlib.suppress(ImportError, TypeError):
++            if issubclass(import_string(path), cls):
++                return True
+     return False
+ 
+ 
+diff --git a/django/contrib/auth/checks.py b/django/contrib/auth/checks.py
+index f2f9a74a6c83..61da4f293a34 100644
+--- a/django/contrib/auth/checks.py
++++ b/django/contrib/auth/checks.py
+@@ -1,3 +1,4 @@
++import contextlib
+ from itertools import chain
+ from types import MethodType
+ 
+@@ -15,13 +16,10 @@ def _subclass_index(class_path, candidate_paths):
+     list of candidate paths. If it does not exist, return -1.
+     """
+     cls = import_string(class_path)
+-    for index, path in enumerate(candidate_paths):
+-        try:
+-            candidate_cls = import_string(path)
+-            if issubclass(candidate_cls, cls):
+-                return index
+-        except (ImportError, TypeError):
+-            continue
++    for i, path in enumerate(candidate_paths):
++        with contextlib.suppress(ImportError, TypeError):
++            if issubclass(import_string(path), cls):
++                return i
+     return -1
+ 
+ 

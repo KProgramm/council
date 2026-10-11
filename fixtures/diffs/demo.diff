@@ -1,59 +1,83 @@
-diff --git a/requirements.txt b/requirements.txt
-index 3f1c2a4..8b7e9d1 100644
---- a/requirements.txt
-+++ b/requirements.txt
-@@ -1,5 +1,6 @@
- fastapi==0.110.0
- uvicorn==0.29.0
- pydantic==2.6.4
- requests==2.31.0
- PyYAML==6.0.1
-+orjson==3.10.0
-diff --git a/app/webhooks.py b/app/webhooks.py
-index 9a7d3e2..c41f0b8 100644
---- a/app/webhooks.py
-+++ b/app/webhooks.py
-@@ -1,20 +1,21 @@
- import hashlib
- import hmac
--import json
- import os
-
-+import orjson
+diff --git a/src/requests/adapters.py b/src/requests/adapters.py
+index 84ec48fc70..f544f9d545 100644
+--- a/src/requests/adapters.py
++++ b/src/requests/adapters.py
+@@ -26,6 +26,7 @@
+ from urllib3.util import Timeout as TimeoutSauce
+ from urllib3.util import parse_url
+ from urllib3.util.retry import Retry
++from urllib3.util.ssl_ import create_urllib3_context
+ 
+ from .auth import _basic_auth_str
+ from .compat import basestring, urlparse
+@@ -71,6 +72,11 @@ def SOCKSProxyManager(*args, **kwargs):
+ DEFAULT_RETRIES = 0
+ DEFAULT_POOL_TIMEOUT = None
+ 
++_preloaded_ssl_context = create_urllib3_context()
++_preloaded_ssl_context.load_verify_locations(
++    extract_zipped_paths(DEFAULT_CA_BUNDLE_PATH)
++)
 +
- WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"].encode()
-
-
--def verify_signature(body: str, signature: str) -> bool:
--    expected = hmac.new(WEBHOOK_SECRET, body.encode(), hashlib.sha256).hexdigest()
--    return hmac.compare_digest(expected, signature)
-+def verify_signature(body: bytes, signature: str) -> bool:
-+    expected = hmac.new(WEBHOOK_SECRET, body, hashlib.sha256).hexdigest()
-+    return expected == signature
-
-
--def parse_payload(body: str) -> dict:
-+def parse_payload(body: bytes) -> dict:
-     """Parse a webhook payload from the request body."""
--    return json.loads(body)
-+    return orjson.loads(body)
-
-
- def event_type(payload: dict) -> str:
-     return payload.get("action", "unknown")
-diff --git a/app/routes.py b/app/routes.py
-index 5e2b7a1..0d93f4c 100644
---- a/app/routes.py
-+++ b/app/routes.py
-@@ -8,10 +8,10 @@ router = APIRouter()
-
- @router.post("/webhooks/github")
- async def github_webhook(request: Request):
--    body = (await request.body()).decode()
-+    body = await request.body()
-     signature = request.headers.get("X-Hub-Signature-256", "").removeprefix("sha256=")
-     if not verify_signature(body, signature):
-         raise HTTPException(status_code=401, detail="bad signature")
-     payload = parse_payload(body)
-     background.enqueue(event_type(payload), payload)
-     return {"ok": True}
+ 
+ def _urllib3_request_context(
+     request: "PreparedRequest",
+@@ -85,8 +91,13 @@ def _urllib3_request_context(
+     cert_reqs = "CERT_REQUIRED"
+     if verify is False:
+         cert_reqs = "CERT_NONE"
+-    if isinstance(verify, str):
+-        pool_kwargs["ca_certs"] = verify
++    elif verify is True:
++        pool_kwargs["ssl_context"] = _preloaded_ssl_context
++    elif isinstance(verify, str):
++        if not os.path.isdir(verify):
++            pool_kwargs["ca_certs"] = verify
++        else:
++            pool_kwargs["ca_cert_dir"] = verify
+     pool_kwargs["cert_reqs"] = cert_reqs
+     if client_cert is not None:
+         if isinstance(client_cert, tuple) and len(client_cert) == 2:
+@@ -284,27 +295,26 @@ def cert_verify(self, conn, url, verify, cert):
+         :param cert: The SSL certificate to verify.
+         """
+         if url.lower().startswith("https") and verify:
+-            cert_loc = None
++            conn.cert_reqs = "CERT_REQUIRED"
+ 
+-            # Allow self-specified cert location.
++            # Only load the CA certificates if 'verify' is a string indicating the CA bundle to use.
++            # Otherwise, if verify is a boolean, we don't load anything since
++            # the connection will be using a context with the default certificates already loaded,
++            # and this avoids a call to the slow load_verify_locations()
+             if verify is not True:
++                # `verify` must be a str with a path then
+                 cert_loc = verify
+ 
+-            if not cert_loc:
+-                cert_loc = extract_zipped_paths(DEFAULT_CA_BUNDLE_PATH)
+-
+-            if not cert_loc or not os.path.exists(cert_loc):
+-                raise OSError(
+-                    f"Could not find a suitable TLS CA certificate bundle, "
+-                    f"invalid path: {cert_loc}"
+-                )
++                if not os.path.exists(cert_loc):
++                    raise OSError(
++                        f"Could not find a suitable TLS CA certificate bundle, "
++                        f"invalid path: {cert_loc}"
++                    )
+ 
+-            conn.cert_reqs = "CERT_REQUIRED"
+-
+-            if not os.path.isdir(cert_loc):
+-                conn.ca_certs = cert_loc
+-            else:
+-                conn.ca_cert_dir = cert_loc
++                if not os.path.isdir(cert_loc):
++                    conn.ca_certs = cert_loc
++                else:
++                    conn.ca_cert_dir = cert_loc
+         else:
+             conn.cert_reqs = "CERT_NONE"
+             conn.ca_certs = None

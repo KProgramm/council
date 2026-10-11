@@ -1,0 +1,42 @@
+diff --git a/requests/models.py b/requests/models.py
+index 1b77b30348..24aa9ae37b 100644
+--- a/requests/models.py
++++ b/requests/models.py
+@@ -347,9 +347,9 @@ def prepare_url(self, url, params):
+         url = url.lstrip()
+ 
+         # Don't do any URL preparation for non-HTTP schemes like `mailto`,
+-        # `data` etc to work around exceptions from `url_parse`, which
+-        # handles RFC 3986 only.
+-        if ':' in url and not url.lower().startswith('http'):
++        # `data`, `http+unix` etc to work around exceptions from `url_parse`,
++        # which handles RFC 3986 only.
++        if ':' in url and not url.lower().startswith(('http://', 'https://')):
+             self.url = url
+             return
+ 
+diff --git a/tests/test_requests.py b/tests/test_requests.py
+index e2892f83d6..1b063eed3b 100755
+--- a/tests/test_requests.py
++++ b/tests/test_requests.py
+@@ -2138,3 +2138,20 @@ def test_preparing_bad_url(self, url):
+         r = requests.Request('GET', url=url)
+         with pytest.raises(requests.exceptions.InvalidURL):
+             r.prepare()
++
++    @pytest.mark.parametrize(
++        'protocol, url',
++        (
++            ("http+unix://", b"http+unix://%2Fvar%2Frun%2Fsocket/path"),
++            ("http+unix://", u"http+unix://%2Fvar%2Frun%2Fsocket/path"),
++            ("mailto", b"mailto:user@example.org"),
++            ("mailto", u"mailto:user@example.org"),
++            ("data", b"data:SSDimaUgUHl0aG9uIQ=="),
++        )
++    )
++    def test_url_passthrough(self, protocol, url):
++        session = requests.Session()
++        session.mount(protocol, HTTPAdapter())
++        p = requests.Request('GET', url=url)
++        p.prepare()
++        assert p.url == url
