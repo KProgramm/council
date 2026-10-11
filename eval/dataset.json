@@ -1,1 +1,42 @@
-[]
+[
+  {
+    "file": "fixtures/diffs/requests-6667.diff",
+    "pr_url": "https://github.com/psf/requests/pull/6667",
+    "ground_truth": "Reverted because caching a default SSLContext introduced edge cases and concurrency issues that outweighed the performance benefit."
+  },
+  {
+    "file": "fixtures/diffs/axios-3785.diff",
+    "pr_url": "https://github.com/axios/axios/pull/3785",
+    "ground_truth": "Reverted for standard browsers because retaining the Content-Type header for FormData payloads broke browser FormData support."
+  },
+  {
+    "file": "fixtures/diffs/fastapi-13314.diff",
+    "pr_url": "https://github.com/fastapi/fastapi/pull/13314",
+    "ground_truth": "Reverted because the annotation change broke Annotated custom validations such as AfterValidator, a use case missing documentation and tests."
+  },
+  {
+    "file": "fixtures/diffs/django-14709.diff",
+    "pr_url": "https://github.com/django/django/pull/14709",
+    "ground_truth": "Reverted because shallow-copying WhereNode children allowed reused querysets evaluated in nested nodes to mutate JOIN aliases."
+  },
+  {
+    "file": "fixtures/diffs/django-17969.diff",
+    "pr_url": "https://github.com/django/django/pull/17969",
+    "ground_truth": "Reverted because using multi-row INSERT statements on Oracle caused crashes with Oracle versions greater than 23.3."
+  },
+  {
+    "file": "fixtures/diffs/django-18316.diff",
+    "pr_url": "https://github.com/django/django/pull/18316",
+    "ground_truth": "Reverted because the subclass-identification refactor caused a performance regression."
+  },
+  {
+    "file": "fixtures/diffs/django-16248.diff",
+    "pr_url": "https://github.com/django/django/pull/16248",
+    "ground_truth": "Reverted because the admin sidebar change caused a visual regression when both navigation and filter sidebars were visible."
+  },
+  {
+    "file": "fixtures/diffs/requests-3713.diff",
+    "pr_url": "https://github.com/psf/requests/pull/3713",
+    "ground_truth": "Reverted because restricting URL preparation to HTTP and HTTPS broke docker-py, while other IDNA workarounds were considered sufficient."
+  }
+]
