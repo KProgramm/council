@@ -79,6 +79,28 @@ The offline suite currently has 13 passing tests. A full live run previously pro
 
 **Unblocks:** the evidence chart and comparison for the pitch.
 
+## G6: SLIM transport — DONE on branch krish/slim (PR pending)
+
+**Live:** `transport/slim_bus.py` `SlimBus` over a real SLIM group session (`ghcr.io/agntcy/slim` from Lungo's compose). Every `Message` goes hub -> SLIM server -> tap -> handlers; `publish()` returns only after handlers have run (same ordering guarantee as `MemoryBus`). Tested end to end with the real G1/G3 `run_council` on `fixtures/diffs/demo.diff` (local Ollama `qwen2.5:3b-instruct`): `BUS=slim` gave 12 messages over 3 rounds ending in a `system` verdict (`escalate`), 215s; `BUS=memory` gave the same shape, 270s. Content differs run to run because the LLM is nondeterministic. A bug found and fixed along the way: a SLIM receive timeout is also a `SessionError`, so the tap loop quit during LLM think time and dropped the session.
+
+**Departures from plan:**
+- Built on `slim_bindings` directly, not `start_streaming_groupchat`: that helper is a one-shot "supervisor asks, participants reply until end_message" flow. Verified semantics: members hear everyone except themselves, so SlimBus uses a hub (publishes) + tap (receives) pair.
+- Bus is chosen in `server/app.py` (`make_bus`), not `runtime.py`, because that is where the bus is built. `server/app.py` now also calls `load_dotenv()`.
+- Added `slim-bindings==1.4.1` to requirements.txt (matches Lungo's SDK pin); `.env.example` gets `SLIM_ENDPOINT`, `SLIM_SHARED_SECRET`.
+- Compose service is `slim` (container `lungo-slim`), not `lungo-slim`. It needs `WORKFLOW_API_KEY` set just to parse the file.
+- Still one process: the 5 agents share one SlimBus. Agents on separate machines (stretch) is not built.
+- Bonus OTEL/Grafana tracing: not done.
+
+**Test it:**
+```bash
+export PATH=$PATH:~/.docker/bin
+cd ~/Desktop/developer/coffeeAgntcy/coffeeAGNTCY/coffee_agents/lungo
+WORKFLOW_API_KEY=local SLIM_SHARED_SECRET=<32+ chars> docker compose up -d slim
+# then in council/, with BUS=slim and the same SLIM_SHARED_SECRET in .env, start the server
+```
+
+**Unblocks:** once G1 merges, `BUS=slim` in `.env` should give the same council output.
+
 ---
 
 ## Mayu: G5 Debate UI — DONE (Replay verified), live mode not yet tested against the real council

@@ -4,3 +4,4 @@ pydantic
 litellm
 python-dotenv
 matplotlib
+slim-bindings==1.4.1
