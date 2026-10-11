@@ -186,19 +186,88 @@ git checkout -b <yourname>/<goal>     # e.g. mayu/ui, nico/prompts, shiven/runti
 
 **Nico:** if git feels clunky, install GitHub Desktop, or ask Cursor to run the git commands for you. Your files are markdown and JSON, so you can't break anything.
 
-### Which LLM
+### Which LLM: NVIDIA Brev (primary), two fallbacks behind it
 
-None of the sponsor credits include an LLM API, so we need our own key. The code uses `litellm`, which lets us switch providers by changing one line in `.env`:
+We're self-hosting a model on a Brev GPU instance using the sponsor credit. `LLM_PROVIDER` in `.env` picks between three options so nobody's blocked if one fails.
 
+**Option A: Brev (primary, do this now)**
+
+1. Install the Brev CLI: `brew install brevdev/homebrew-brev/brev` (Mac). No Mac? Check `docs.nvidia.com/brev` for Linux/Windows, or ask in the hackathon Discord.
+2. `brev login` (authenticates against the org your credits were redeemed to)
+3. Launch a model in one command: `brev ollama -m llama3.1:8b`
+   - Provisions a GPU instance and loads Ollama automatically. Takes a few minutes.
+   - Too slow once running? Kill it and relaunch with `llama3.2:3b`.
+4. When ready, the terminal prints a `curl` command. **Run it and confirm it responds before touching code.**
+5. Set `.env`:
+   ```
+   LLM_PROVIDER=brev
+   OLLAMA_MODEL=llama3.1:8b
+   OLLAMA_BASE_URL=<host:port Brev gave you>
+   MAX_CONCURRENT_LLM_CALLS=3
+   BUS=memory
+   ```
+
+**Timebox this to 20 minutes.** If it's not working by then, move to Option B and come back to Brev later if there's time.
+
+**Option B: Cisco's lab proxy (fallback 1)**
+
+Already captured when you ran the Corto lab steps. Read it straight from the file instead of re-deriving it:
+```bash
+cat $HOME/work/coffeeAgntcy/coffeeAGNTCY/coffee_agents/corto/.env
 ```
-LLM_MODEL=<provider/model, e.g. anthropic/..., openai/..., gemini/...>
+```
+LLM_PROVIDER=cisco
+LLM_MODEL=<value of LLM_MODEL from that file>
+LLM_BASE_URL=<value of LITELLM_PROXY_BASE_URL>
+LLM_API_KEY=<value of LITELLM_PROXY_API_KEY>
+```
+Test from a laptop: `curl -s "$LLM_BASE_URL/v1/models" -H "Authorization: Bearer $LLM_API_KEY"`. If that hangs, the proxy is lab-internal only, and whoever uses it needs to run `server/` from inside the lab VM.
+
+**Option C: a paid key (fallback 2)**
+
+Anyone's Anthropic or OpenAI key with a few dollars loaded.
+```
+LLM_PROVIDER=paid
+LLM_MODEL=anthropic/<model>          # or openai/<model>
 LLM_API_KEY=<the key>
-MAX_CONCURRENT_LLM_CALLS=3
 ```
 
-- **Best:** anyone's paid Anthropic or OpenAI API key. A full review is roughly 15 to 20 LLM calls, which costs cents.
-- **Free fallback:** a Google AI Studio (Gemini) key. The free tier has low rate limits, so **each person uses their own key** and we keep `MAX_CONCURRENT_LLM_CALLS` low.
-- **Not worth it today:** hosting our own model on NVIDIA Brev. It's real setup work, and we don't have time to learn it.
+**The code picks a provider from `.env` so switching is zero-code-change for anyone:**
+```python
+import os, litellm
+
+PROVIDER = os.getenv("LLM_PROVIDER", "brev")
+
+async def call_llm(system_prompt: str, user_content: str) -> str:
+    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
+    if PROVIDER == "brev":
+        resp = await litellm.acompletion(
+            model=f"ollama/{os.environ['OLLAMA_MODEL']}",
+            api_base=os.environ["OLLAMA_BASE_URL"],
+            messages=messages,
+            format="json",            # Ollama's structured-output flag
+        )
+    elif PROVIDER == "cisco":
+        resp = await litellm.acompletion(
+            model=f"litellm_proxy/{os.environ['LLM_MODEL']}",
+            api_base=os.environ["LLM_BASE_URL"],
+            api_key=os.environ["LLM_API_KEY"],
+            messages=messages,
+        )
+    else:  # paid
+        resp = await litellm.acompletion(
+            model=os.environ["LLM_MODEL"],
+            api_key=os.environ["LLM_API_KEY"],
+            messages=messages,
+        )
+    return resp.choices[0].message.content
+```
+
+**Heads up on quality:** an 8B open model follows strict JSON instructions less reliably than Claude or GPT. Lean harder on the retry-on-parse-failure logic in G1 (Shiven), and if agents keep failing to return valid JSON, that's the signal to fall back to Option B or C rather than burning time debugging prompts.
+
+**Saving calls either way:** one review is ~16 LLM calls, the full eval ~150. Replay mode uses zero. Shiven adds a disk cache in G1 (`.cache/<hash of prompt+diff>.json`) so reruns during debugging are free.
+
+**Cost note:** Brev GPU time runs against the $25 credit while the instance is up. Stop or delete the instance once you've got what you need for the demo, or when switching to a fallback, so it's not burning credit overnight.
 
 ### How to use AI on your goal (Cursor, Codex, Claude)
 
@@ -411,12 +480,28 @@ Until G1 is merged, `POST /reviews` just runs the replay, so Mayu is never block
 
 **What it is:** swaps our in-memory channel for Cisco's real messaging layer (SLIM, from AGNTCY). This is the sponsor credit. **Nothing else in the code changes**, because `SlimBus` implements the same `Bus` interface.
 
+**Where:** the Outshift lab VM. It already has Docker, the coffeeAgntcy repo, and SLIM. No local Docker install needed.
+
+**The pattern we copy:** Lungo Order Fulfillment. Their order is our diff; their Shipper/Accountant/Farm/Helpdesk are our 5 reviewers; their end message `DELIVERED` is our `VERDICT`. Their call:
+```python
+response_stream = client.start_streaming_groupchat(
+    init_message=request,           # ours: the diff
+    group_channel=f"{uuid4()}",     # ours: the review_id
+    participants=recipients,        # ours: the 5 reviewer agents
+    end_message="DELIVERED",        # ours: "VERDICT"
+    timeout=60,
+)
+```
+
 **Steps:**
-1. Docker Desktop running. Clone `github.com/agntcy/coffeeAgntcy`.
-2. Start just the SLIM service from Lungo's `docker-compose` (`coffeeAGNTCY/coffee_agents/lungo`).
-3. Read Lungo's group-communication code (the order fulfillment group chat). Build `transport/slim_bus.py`: `publish` sends a `Message` (as JSON) to a SLIM group channel named after the `review_id`; `subscribe` registers a receive callback.
-4. In `runtime.py`, choose the bus from `.env`: `BUS=memory` or `BUS=slim`.
-5. **Stretch:** 2 agents on Shiven's laptop, 3 on Krish's, same SLIM channel. "These agents are running on different computers" is a strong demo line.
+1. In the lab terminal, read how it's built:
+   - `bat .../lungo/agents/supervisors/logistics/graph/tools.py` (creates the group, streams replies)
+   - the shipper or accountant agent folder (how one participant listens and replies in the group)
+2. Start only the infrastructure: `docker compose up -d lungo-slim` in the `lungo` folder.
+3. Build `transport/slim_bus.py`: `publish` sends a `Message` as JSON into the group channel; `subscribe` registers the receive callback. Each reviewer becomes a group participant like the shipper is.
+4. In `runtime.py`, pick the bus from `.env`: `BUS=memory` or `BUS=slim`.
+5. **Bonus, for free:** Lungo's Grafana tracing. Point our agents at the same OTEL collector and the judges see a trace of the whole debate in Cisco's own dashboard. Screenshot it for the slides.
+6. **Stretch:** some agents on a laptop, some in the VM, one SLIM channel. "These agents run on different machines" is a strong demo line.
 
 **Timebox:** if it isn't working after 90 minutes total, ship on `MemoryBus` and pitch "bus interface built for SLIM." Because of the `Bus` interface, the switch is one `.env` line.
 
@@ -494,7 +579,7 @@ Until G1 is merged, `POST /reviews` just runs the replay, so Mayu is never block
 | --- | --- | --- |
 | **ElevenLabs** (1 month Creator) | **G10 (Mayu):** give each agent its own voice and read each message aloud during the demo. Generate audio from each message's `text` with the ElevenLabs API, play it as the card appears. Judges *hear* Security and Performance arguing. | Yes, if G5 is done by tonight. Big demo impact for little code. Pre-generate audio for the demo transcript so it can't fail live. |
 | **n8n** (1 month Pro) | **G11 (Nico):** a no-code workflow: GitHub webhook (new PR opened) → HTTP request to our `POST /reviews` → wait → post the tradeoff map as a comment on the PR. Shows it working on a real GitHub PR, no Python needed. | Yes, it's perfect for Nico. Needs the server reachable from the internet (ngrok) or n8n running locally. |
-| **NVIDIA Brev** ($25 GPU) | Host an open model ourselves instead of using an API key | No. Too much setup today. Redeem it anyway (deadline Oct 12) for later projects. |
+| **NVIDIA Brev** ($25 GPU) | **This is now our primary LLM** (see "Which LLM" above), not a stretch goal. | Already in use. |
 | **Beeceptor** (mock APIs) | Fake API endpoints | No use for us. |
 
 Everyone should redeem their credits anyway. They're free.
