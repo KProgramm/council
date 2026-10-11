@@ -8,8 +8,12 @@ from contracts.schema import Message, TradeoffMap
 
 async def build_map(transcript: list[Message], outcome: str) -> TradeoffMap:
     """One LLM call that summarizes the debate into a TradeoffMap. Never picks the answer."""
-    if outcome not in {"consensus", "escalate"}:
+    # `outcome` is a decision from council.convergence (or the legacy "consensus"/"escalate").
+    decisions = {"auto_approve", "approve_with_changes", "block", "escalate"}
+    if outcome not in decisions | {"consensus"}:
         raise ValueError(f"Unsupported tradeoff outcome: {outcome}")
+    decision = outcome if outcome in decisions else None
+    map_outcome = "escalate" if outcome == "escalate" else "consensus"
 
     diff_message = next(
         (
@@ -26,7 +30,8 @@ async def build_map(transcript: list[Message], outcome: str) -> TradeoffMap:
     user_content = json.dumps(
         {
             "review_id": diff_message.review_id,
-            "outcome": outcome,
+            "outcome": map_outcome,
+            "decision": decision,
             "transcript": [message.model_dump(mode="json") for message in transcript],
         },
         ensure_ascii=True,
@@ -58,7 +63,8 @@ async def build_map(transcript: list[Message], outcome: str) -> TradeoffMap:
 
             payload.update(
                 review_id=diff_message.review_id,
-                outcome=outcome,
+                outcome=map_outcome,
+                decision=decision,
                 final_positions=latest_positions,
             )
             tradeoff_map = TradeoffMap.model_validate(payload)
@@ -80,7 +86,7 @@ async def build_map(transcript: list[Message], outcome: str) -> TradeoffMap:
             validation_error = str(error)
 
     unresolved: list[str] = []
-    if outcome == "escalate":
+    if map_outcome == "escalate":
         reviewer_positions = list(latest_positions.items())
         for index, (left_agent, left_position) in enumerate(reviewer_positions):
             for right_agent, right_position in reviewer_positions[index + 1 :]:
@@ -95,7 +101,8 @@ async def build_map(transcript: list[Message], outcome: str) -> TradeoffMap:
 
     return TradeoffMap(
         review_id=diff_message.review_id,
-        outcome='escalate',
+        outcome=map_outcome,
+        decision=decision,
         final_positions=latest_positions,
         resolved=[],
         unresolved=unresolved,

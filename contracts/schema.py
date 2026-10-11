@@ -6,6 +6,7 @@ import time, uuid
 
 AgentName = Literal["security", "performance", "compatibility", "quality", "product", "system"]
 Position = Literal["approve", "approve_with_changes", "block", "escalate"]
+Decision = Literal["auto_approve", "approve_with_changes", "block", "escalate"]
 
 class Claim(BaseModel):
     file: str                      # which file in the diff
@@ -38,3 +39,8 @@ class TradeoffMap(BaseModel):
     resolved: list[str]            # concerns settled during the debate
     unresolved: list[str]          # e.g. "security vs performance: pin old version or take 3x speedup"
     human_decisions: list[str]     # questions a human must answer
+    # Added after G6 (all optional so old transcripts and the web UI keep working):
+    decision: Decision | None = None   # what the council decided; "escalate" only for critical risk
+    root_cause: str | None = None      # the one thing that drives the decision
+    suggested_fix: str | None = None   # smallest change that would make the PR mergeable
+    confidence: float | None = None    # 0.0 to 1.0, the judge's confidence in the decision

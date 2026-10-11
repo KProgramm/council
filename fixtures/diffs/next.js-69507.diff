@@ -1,0 +1,554 @@
+diff --git a/packages/next/src/client/components/layout-router.tsx b/packages/next/src/client/components/layout-router.tsx
+index cfa1f7c298b3..286bb8de8482 100644
+--- a/packages/next/src/client/components/layout-router.tsx
++++ b/packages/next/src/client/components/layout-router.tsx
+@@ -517,7 +517,6 @@ export default function OuterLayoutRouter({
+   template,
+   notFound,
+   notFoundStyles,
+-  styles,
+ }: {
+   parallelRouterKey: string
+   segmentPath: FlightSegmentPath
+@@ -529,7 +528,6 @@ export default function OuterLayoutRouter({
+   template: React.ReactNode
+   notFound: React.ReactNode | undefined
+   notFoundStyles: React.ReactNode | undefined
+-  styles?: React.ReactNode
+ }) {
+   const context = useContext(LayoutRouterContext)
+   if (!context) {
+@@ -562,7 +560,6 @@ export default function OuterLayoutRouter({
+ 
+   return (
+     <>
+-      {styles}
+       {preservedSegments.map((preservedSegment) => {
+         const preservedSegmentValue = getSegmentValue(preservedSegment)
+         const cacheKey = createRouterCacheKey(preservedSegment)
+diff --git a/packages/next/src/server/app-render/app-render.tsx b/packages/next/src/server/app-render/app-render.tsx
+index 0c7c66133f00..bc2336ea5500 100644
+--- a/packages/next/src/server/app-render/app-render.tsx
++++ b/packages/next/src/server/app-render/app-render.tsx
+@@ -435,7 +435,7 @@ async function ReactServerApp({ tree, ctx, asNotFound }: ReactServerAppProps) {
+     createDynamicallyTrackedSearchParams,
+   })
+ 
+-  const { seedData, styles } = await createComponentTree({
++  const seedData = await createComponentTree({
+     ctx,
+     createSegmentPath: (child) => child,
+     loaderTree: tree,
+@@ -458,30 +458,27 @@ async function ReactServerApp({ tree, ctx, asNotFound }: ReactServerAppProps) {
+     typeof varyHeader === 'string' && varyHeader.includes(NEXT_URL)
+ 
+   return (
+-    <>
+-      {styles}
+-      <AppRouter
+-        buildId={ctx.renderOpts.buildId}
+-        assetPrefix={ctx.assetPrefix}
+-        initialCanonicalUrl={urlPathname}
+-        // This is the router state tree.
+-        initialTree={initialTree}
+-        // This is the tree of React nodes that are seeded into the cache
+-        initialSeedData={seedData}
+-        couldBeIntercepted={couldBeIntercepted}
+-        initialHead={
+-          <>
+-            <NonIndex ctx={ctx} />
+-            {/* Adding requestId as react key to make metadata remount for each render */}
+-            <MetadataTree key={ctx.requestId} />
+-          </>
+-        }
+-        globalErrorComponent={GlobalError}
+-        // This is used to provide debug information (when in development mode)
+-        // about which slots were not filled by page components while creating the component tree.
+-        missingSlots={missingSlots}
+-      />
+-    </>
++    <AppRouter
++      buildId={ctx.renderOpts.buildId}
++      assetPrefix={ctx.assetPrefix}
++      initialCanonicalUrl={urlPathname}
++      // This is the router state tree.
++      initialTree={initialTree}
++      // This is the tree of React nodes that are seeded into the cache
++      initialSeedData={seedData}
++      couldBeIntercepted={couldBeIntercepted}
++      initialHead={
++        <>
++          <NonIndex ctx={ctx} />
++          {/* Adding requestId as react key to make metadata remount for each render */}
++          <MetadataTree key={ctx.requestId} />
++        </>
++      }
++      globalErrorComponent={GlobalError}
++      // This is used to provide debug information (when in development mode)
++      // about which slots were not filled by page components while creating the component tree.
++      missingSlots={missingSlots}
++    />
+   )
+ }
+ 
+diff --git a/packages/next/src/server/app-render/create-component-tree.tsx b/packages/next/src/server/app-render/create-component-tree.tsx
+index 0ea17745987d..1f348d230be1 100644
+--- a/packages/next/src/server/app-render/create-component-tree.tsx
++++ b/packages/next/src/server/app-render/create-component-tree.tsx
+@@ -1,5 +1,5 @@
+ import type { FlightSegmentPath, CacheNodeSeedData } from './types'
+-import React, { type ReactNode } from 'react'
++import React from 'react'
+ import { isClientReference } from '../../lib/client-reference'
+ import { getLayoutOrPageModule } from '../lib/app-dir-module'
+ import type { LoaderTree } from '../lib/app-dir-module'
+@@ -16,11 +16,6 @@ import { NextNodeServerSpan } from '../lib/trace/constants'
+ import { StaticGenBailoutError } from '../../client/components/static-generation-bailout'
+ import type { LoadingModuleData } from '../../shared/lib/app-router-context.shared-runtime'
+ 
+-type ComponentTree = {
+-  seedData: CacheNodeSeedData
+-  styles: ReactNode
+-}
+-
+ type Params = {
+   [key: string]: string | string[]
+ }
+@@ -41,7 +36,7 @@ export function createComponentTree(props: {
+   metadataOutlet?: React.ReactNode
+   ctx: AppRenderContext
+   missingSlots?: Set<string>
+-}): Promise<ComponentTree> {
++}): Promise<CacheNodeSeedData> {
+   return getTracer().trace(
+     NextNodeServerSpan.createComponentTree,
+     {
+@@ -77,7 +72,7 @@ async function createComponentTreeInternal({
+   metadataOutlet?: React.ReactNode
+   ctx: AppRenderContext
+   missingSlots?: Set<string>
+-}): Promise<ComponentTree> {
++}): Promise<CacheNodeSeedData> {
+   const {
+     renderOpts: { nextConfigOutput, experimental },
+     staticGenerationStore,
+@@ -379,7 +374,6 @@ async function createComponentTreeInternal({
+         // if we're prefetching and that there's a Loading component, we bail out
+         // otherwise we keep rendering for the prefetch.
+         // We also want to bail out if there's no Loading component in the tree.
+-        let currentStyles = undefined
+         let childCacheNodeSeedData: CacheNodeSeedData | null = null
+ 
+         if (
+@@ -431,24 +425,22 @@ async function createComponentTreeInternal({
+             }
+           }
+ 
+-          const { seedData, styles: childComponentStyles } =
+-            await createComponentTreeInternal({
+-              createSegmentPath: (child) => {
+-                return createSegmentPath([...currentSegmentPath, ...child])
+-              },
+-              loaderTree: parallelRoute,
+-              parentParams: currentParams,
+-              rootLayoutIncluded: rootLayoutIncludedAtThisLevelOrAbove,
+-              injectedCSS: injectedCSSWithCurrentLayout,
+-              injectedJS: injectedJSWithCurrentLayout,
+-              injectedFontPreloadTags: injectedFontPreloadTagsWithCurrentLayout,
+-              asNotFound,
+-              metadataOutlet,
+-              ctx,
+-              missingSlots,
+-            })
+-
+-          currentStyles = childComponentStyles
++          const seedData = await createComponentTreeInternal({
++            createSegmentPath: (child) => {
++              return createSegmentPath([...currentSegmentPath, ...child])
++            },
++            loaderTree: parallelRoute,
++            parentParams: currentParams,
++            rootLayoutIncluded: rootLayoutIncludedAtThisLevelOrAbove,
++            injectedCSS: injectedCSSWithCurrentLayout,
++            injectedJS: injectedJSWithCurrentLayout,
++            injectedFontPreloadTags: injectedFontPreloadTagsWithCurrentLayout,
++            asNotFound,
++            metadataOutlet,
++            ctx,
++            missingSlots,
++          })
++
+           childCacheNodeSeedData = seedData
+         }
+ 
+@@ -471,7 +463,6 @@ async function createComponentTreeInternal({
+             templateScripts={templateScripts}
+             notFound={notFoundComponent}
+             notFoundStyles={notFoundStyles}
+-            styles={currentStyles}
+           />,
+           childCacheNodeSeedData,
+         ]
+@@ -496,20 +487,20 @@ async function createComponentTreeInternal({
+ 
+   // When the segment does not have a layout or page we still have to add the layout router to ensure the path holds the loading component
+   if (!Component) {
+-    return {
+-      seedData: [
+-        actualSegment,
+-        parallelRouteCacheNodeSeedData,
+-        // TODO: I don't think the extra fragment is necessary. React treats top
+-        // level fragments as transparent, i.e. the runtime behavior should be
+-        // identical even without it. But maybe there's some findDOMNode-related
+-        // reason that I'm not aware of, so I'm leaving it as-is out of extreme
+-        // caution, for now.
+-        <>{parallelRouteProps.children}</>,
+-        loadingData,
+-      ],
+-      styles: layerAssets,
+-    }
++    return [
++      actualSegment,
++      parallelRouteCacheNodeSeedData,
++      // TODO: I don't think the extra fragment is necessary. React treats top
++      // level fragments as transparent, i.e. the runtime behavior should be
++      // identical even without it. But maybe there's some findDOMNode-related
++      // reason that I'm not aware of, so I'm leaving it as-is out of extreme
++      // caution, for now.
++      <>
++        {layerAssets}
++        {parallelRouteProps.children}
++      </>,
++      loadingData,
++    ]
+   }
+ 
+   // If force-dynamic is used and the current render supports postponing, we
+@@ -527,19 +518,19 @@ async function createComponentTreeInternal({
+     staticGenerationStore.forceDynamic &&
+     staticGenerationStore.prerenderState
+   ) {
+-    return {
+-      seedData: [
+-        actualSegment,
+-        parallelRouteCacheNodeSeedData,
++    return [
++      actualSegment,
++      parallelRouteCacheNodeSeedData,
++      <>
+         <Postpone
+           prerenderState={staticGenerationStore.prerenderState}
+           reason='dynamic = "force-dynamic" was used'
+           pathname={staticGenerationStore.urlPathname}
+-        />,
+-        loadingData,
+-      ],
+-      styles: layerAssets,
+-    }
++        />
++        {layerAssets}
++      </>,
++      loadingData,
++    ]
+   }
+ 
+   const isClientComponent = isClientReference(layoutOrPageMod)
+@@ -594,6 +585,7 @@ async function createComponentTreeInternal({
+         <>
+           {metadataOutlet}
+           <ClientPageRoot props={props} Component={Component} />
++          {layerAssets}
+         </>
+       )
+     } else {
+@@ -604,21 +596,26 @@ async function createComponentTreeInternal({
+         <>
+           {metadataOutlet}
+           <Component {...props} />
++          {layerAssets}
+         </>
+       )
+     }
+   } else {
+     // For layouts we just render the component
+-    segmentElement = <Component {...props} />
++    segmentElement = (
++      <>
++        {layerAssets}
++        <Component {...props} />
++      </>
++    )
+   }
+ 
+-  return {
+-    seedData: [
+-      actualSegment,
+-      parallelRouteCacheNodeSeedData,
+-      <>
+-        {segmentElement}
+-        {/* This null is currently critical. The wrapped Component can render null and if there was not fragment
++  return [
++    actualSegment,
++    parallelRouteCacheNodeSeedData,
++    <>
++      {segmentElement}
++      {/* This null is currently critical. The wrapped Component can render null and if there was not fragment
+             surrounding it this would look like a pending tree data state on the client which will cause an error
+             and break the app. Long-term we need to move away from using null as a partial tree identifier since it
+             is a valid return type for the components we wrap. Once we make this change we can safely remove the
+@@ -626,10 +623,8 @@ async function createComponentTreeInternal({
+             If the Component above renders null the actual tree data will look like `[null, null]`. If we remove the extra
+             null it will look like `null` (the array is elided) and this is what confuses the client router.
+             TODO-APP update router to use a Symbol for partial tree detection */}
+-        {null}
+-      </>,
+-      loadingData,
+-    ],
+-    styles: layerAssets,
+-  }
++      {null}
++    </>,
++    loadingData,
++  ]
+ }
+diff --git a/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx b/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
+index 3a0dd77ea61e..3876c9356b35 100644
+--- a/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
++++ b/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
+@@ -4,7 +4,6 @@ import type {
+   FlightSegmentPath,
+   Segment,
+ } from './types'
+-import React from 'react'
+ import {
+   canSegmentBeOverridden,
+   matchSegment,
+@@ -16,9 +15,7 @@ import {
+   addSearchParamsIfPageSegment,
+   createFlightRouterStateFromLoaderTree,
+ } from './create-flight-router-state-from-loader-tree'
+-import { parseLoaderTree } from './parse-loader-tree'
+ import type { CreateSegmentPath, AppRenderContext } from './app-render'
+-import { getLayerAssets } from './get-layer-assets'
+ import { hasLoadingComponentInTree } from './has-loading-component-in-tree'
+ import { createComponentTree } from './create-component-tree'
+ import { DEFAULT_SEGMENT_KEY } from '../../shared/lib/segment'
+@@ -139,7 +136,7 @@ export async function walkTreeWithFlightRouterState({
+       return [[overriddenSegment, routerState, null, null]]
+     } else {
+       // Create component tree using the slice of the loaderTree
+-      const { seedData } = await createComponentTree(
++      const seedData = await createComponentTree(
+         // This ensures flightRouterPath is valid and filters down the tree
+         {
+           ctx,
+@@ -157,23 +154,7 @@ export async function walkTreeWithFlightRouterState({
+         }
+       )
+ 
+-      // Create head
+-      const { layoutOrPagePath } = parseLoaderTree(loaderTreeToFilter)
+-      const layerAssets = getLayerAssets({
+-        ctx,
+-        layoutOrPagePath,
+-        injectedCSS: new Set(injectedCSS),
+-        injectedJS: new Set(injectedJS),
+-        injectedFontPreloadTags: new Set(injectedFontPreloadTags),
+-      })
+-      const head = (
+-        <>
+-          {layerAssets}
+-          {rscPayloadHead}
+-        </>
+-      )
+-
+-      return [[overriddenSegment, routerState, seedData, head]]
++      return [[overriddenSegment, routerState, seedData, rscPayloadHead]]
+     }
+   }
+ 
+diff --git a/test/e2e/app-dir/parallel-routes-css/app/@foo/[...catchAll]/page.tsx b/test/e2e/app-dir/parallel-routes-css/app/@foo/[...catchAll]/page.tsx
+new file mode 100644
+index 000000000000..6c26d0f730cf
+--- /dev/null
++++ b/test/e2e/app-dir/parallel-routes-css/app/@foo/[...catchAll]/page.tsx
+@@ -0,0 +1,9 @@
++import styles from './style.module.css'
++
++export default function Page() {
++  return (
++    <div className={styles.bgRed} id="slot">
++      Slot
++    </div>
++  )
++}
+diff --git a/test/e2e/app-dir/parallel-routes-css/app/@foo/[...catchAll]/style.module.css b/test/e2e/app-dir/parallel-routes-css/app/@foo/[...catchAll]/style.module.css
+new file mode 100644
+index 000000000000..dc9f18717025
+--- /dev/null
++++ b/test/e2e/app-dir/parallel-routes-css/app/@foo/[...catchAll]/style.module.css
+@@ -0,0 +1,3 @@
++.bgRed {
++  background-color: red;
++}
+diff --git a/test/e2e/app-dir/parallel-routes-css/app/@foo/default.tsx b/test/e2e/app-dir/parallel-routes-css/app/@foo/default.tsx
+new file mode 100644
+index 000000000000..c17431379f96
+--- /dev/null
++++ b/test/e2e/app-dir/parallel-routes-css/app/@foo/default.tsx
+@@ -0,0 +1,3 @@
++export default function Page() {
++  return null
++}
+diff --git a/test/e2e/app-dir/parallel-routes-css/app/layout.tsx b/test/e2e/app-dir/parallel-routes-css/app/layout.tsx
+new file mode 100644
+index 000000000000..e76395794b57
+--- /dev/null
++++ b/test/e2e/app-dir/parallel-routes-css/app/layout.tsx
+@@ -0,0 +1,20 @@
++import { ReactNode } from 'react'
++
++const RootLayout = ({
++  children,
++  foo,
++}: {
++  children: ReactNode
++  foo: ReactNode
++}) => {
++  return (
++    <html lang="en">
++      <body>
++        {children}
++        {foo}
++      </body>
++    </html>
++  )
++}
++
++export default RootLayout
+diff --git a/test/e2e/app-dir/parallel-routes-css/app/nested/page.tsx b/test/e2e/app-dir/parallel-routes-css/app/nested/page.tsx
+new file mode 100644
+index 000000000000..05a571d2744d
+--- /dev/null
++++ b/test/e2e/app-dir/parallel-routes-css/app/nested/page.tsx
+@@ -0,0 +1,14 @@
++import Link from 'next/link'
++
++export const metadata = {
++  title: 'Nested Page',
++}
++
++export default function Page() {
++  return (
++    <div className="sub">
++      <p>Sub</p>
++      <Link href="/">Home</Link>
++    </div>
++  )
++}
+diff --git a/test/e2e/app-dir/parallel-routes-css/app/page.tsx b/test/e2e/app-dir/parallel-routes-css/app/page.tsx
+new file mode 100644
+index 000000000000..8b7a4d47f02b
+--- /dev/null
++++ b/test/e2e/app-dir/parallel-routes-css/app/page.tsx
+@@ -0,0 +1,15 @@
++import Link from 'next/link'
++import styles from './style.module.css'
++
++export const metadata = {
++  title: 'Home Page',
++}
++
++export default function Home() {
++  return (
++    <main id="main" className={styles.bgBlue}>
++      <p>Main</p>
++      <Link href="/nested">Nested Page</Link>
++    </main>
++  )
++}
+diff --git a/test/e2e/app-dir/parallel-routes-css/app/style.module.css b/test/e2e/app-dir/parallel-routes-css/app/style.module.css
+new file mode 100644
+index 000000000000..74c611f0ba38
+--- /dev/null
++++ b/test/e2e/app-dir/parallel-routes-css/app/style.module.css
+@@ -0,0 +1,3 @@
++.bgBlue {
++  background-color: blue;
++}
+diff --git a/test/e2e/app-dir/parallel-routes-css/parallel-routes-css.test.ts b/test/e2e/app-dir/parallel-routes-css/parallel-routes-css.test.ts
+new file mode 100644
+index 000000000000..5b9945817c6f
+--- /dev/null
++++ b/test/e2e/app-dir/parallel-routes-css/parallel-routes-css.test.ts
+@@ -0,0 +1,50 @@
++import { nextTestSetup } from 'e2e-utils'
++import type { BrowserInterface } from 'next-webdriver'
++
++describe('parallel-routes-catchall-css', () => {
++  const { next } = nextTestSetup({
++    files: __dirname,
++  })
++
++  async function getChildrenBackgroundColor(browser: BrowserInterface) {
++    return browser.eval(
++      `window.getComputedStyle(document.getElementById('main')).backgroundColor`
++    )
++  }
++
++  async function getSlotBackgroundColor(browser: BrowserInterface) {
++    return browser.eval(
++      `window.getComputedStyle(document.getElementById('slot')).backgroundColor`
++    )
++  }
++
++  it('should properly load the Head content from multiple leaf segments', async () => {
++    const browser = await next.browser('/')
++
++    // the page background should be blue
++    expect(await getChildrenBackgroundColor(browser)).toBe('rgb(0, 0, 255)')
++
++    expect(await browser.elementByCss('title').text()).toBe('Home Page')
++    expect(await browser.elementsByCss('title')).toHaveLength(1)
++
++    // navigate to the page that matches a parallel route
++    await browser.elementByCss("[href='/nested']").click()
++    await browser.waitForElementByCss('#slot')
++
++    // the slot's background color should be red
++    expect(await getSlotBackgroundColor(browser)).toBe('rgb(255, 0, 0)')
++
++    // there should no longer be a main element
++    expect(await browser.hasElementByCssSelector('#main')).toBeFalsy()
++
++    // the slot background should still be red on a fresh load
++    await browser.refresh()
++    expect(await getSlotBackgroundColor(browser)).toBe('rgb(255, 0, 0)')
++
++    // when we navigate from the route that matched the catch-all, we should see the CSS for the main element
++    await browser.elementByCss("[href='/']").click()
++    await browser.waitForElementByCss('#main')
++
++    expect(await getChildrenBackgroundColor(browser)).toBe('rgb(0, 0, 255)')
++  })
++})
+diff --git a/test/turbopack-build-tests-manifest.json b/test/turbopack-build-tests-manifest.json
+index ced544e9c3c8..e39e37bd5bee 100644
+--- a/test/turbopack-build-tests-manifest.json
++++ b/test/turbopack-build-tests-manifest.json
+@@ -2307,6 +2307,15 @@
+       "flakey": [],
+       "runtimeError": false
+     },
++    "test/e2e/app-dir/parallel-routes-css/parallel-routes-css.test.ts": {
++      "passed": [],
++      "failed": [
++        "parallel-routes-catchall-css should properly load the Head content from multiple leaf segments"
++      ],
++      "pending": [],
++      "flakey": [],
++      "runtimeError": false
++    },
+     "test/e2e/app-dir/parallel-routes-layouts/parallel-routes-layouts.test.ts": {
+       "passed": [
+         "parallel-routes-layouts should properly render layouts for multiple slots"

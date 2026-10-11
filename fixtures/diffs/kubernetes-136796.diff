@@ -1,0 +1,2499 @@
+diff --git a/go.mod b/go.mod
+index 48a6651abc2ef..59a639edb113d 100644
+--- a/go.mod
++++ b/go.mod
+@@ -115,7 +115,7 @@ require (
+ 	k8s.io/system-validators v1.12.1
+ 	k8s.io/utils v0.0.0-20260108192941-914a6e750570
+ 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730
+-	sigs.k8s.io/knftables v0.0.17
++	sigs.k8s.io/knftables v0.0.20
+ 	sigs.k8s.io/randfill v1.0.0
+ 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2
+ 	sigs.k8s.io/yaml v1.6.0
+diff --git a/go.sum b/go.sum
+index f56eb82413479..6bcad2227af47 100644
+--- a/go.sum
++++ b/go.sum
+@@ -508,8 +508,8 @@ sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.34.0 h1:hSfpvjjTQXQY2
+ sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.34.0/go.mod h1:Ve9uj1L+deCXFrPOk1LpFXqTg7LCFzFso6PA48q/XZw=
+ sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 h1:IpInykpT6ceI+QxKBbEflcR5EXP7sU1kvOlxwZh5txg=
+ sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730/go.mod h1:mdzfpAEoE6DHQEN0uh9ZbOCuHbLK5wOm7dK4ctXE9Tg=
+-sigs.k8s.io/knftables v0.0.17 h1:wGchTyRF/iGTIjd+vRaR1m676HM7jB8soFtyr/148ic=
+-sigs.k8s.io/knftables v0.0.17/go.mod h1:f/5ZLKYEUPUhVjUCg6l80ACdL7CIIyeL0DxfgojGRTk=
++sigs.k8s.io/knftables v0.0.20 h1:eU2NWpgcJ/wgb4Fy0cX3klK6nDjERvZRdYgkORLU0Tc=
++sigs.k8s.io/knftables v0.0.20/go.mod h1:f/5ZLKYEUPUhVjUCg6l80ACdL7CIIyeL0DxfgojGRTk=
+ sigs.k8s.io/kustomize/api v0.20.1 h1:iWP1Ydh3/lmldBnH/S5RXgT98vWYMaTUL1ADcr+Sv7I=
+ sigs.k8s.io/kustomize/api v0.20.1/go.mod h1:t6hUFxO+Ph0VxIk1sKp1WS0dOjbPCtLJ4p8aADLwqjM=
+ sigs.k8s.io/kustomize/cmd/config v0.20.1/go.mod h1:R7rQ8kxknVlXWVUIbxWtMgu8DCCNVtl8V0KrmeVd/KE=
+diff --git a/pkg/proxy/nftables/proxier.go b/pkg/proxy/nftables/proxier.go
+index e975c791ec8a2..929ba54f11530 100644
+--- a/pkg/proxy/nftables/proxier.go
++++ b/pkg/proxy/nftables/proxier.go
+@@ -1109,24 +1109,20 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
+ 		ipvX_addr = "ipv6_addr"
+ 	}
+ 
++	var err error
++
+ 	var existingChains sets.Set[string]
+-	existingChainsList, err := proxier.nftables.List(context.TODO(), "chain")
+-	if err == nil {
+-		existingChains = sets.New(existingChainsList...)
+-	} else {
+-		proxier.logger.Error(err, "Failed to list existing chains")
+-	}
+ 	var existingAffinitySets sets.Set[string]
+-	existingSets, err := proxier.nftables.List(context.TODO(), "sets")
+-	if err == nil {
++	if allObjects, err := proxier.nftables.ListAll(context.TODO()); err == nil {
++		existingChains = sets.New(allObjects["chain"]...)
+ 		existingAffinitySets = sets.New[string]()
+-		for _, set := range existingSets {
++		for _, set := range allObjects["set"] {
+ 			if isAffinitySetName(set) {
+ 				existingAffinitySets.Insert(set)
+ 			}
+ 		}
+ 	} else {
+-		proxier.logger.Error(err, "Failed to list existing sets")
++		proxier.logger.Error(err, "Failed to list existing nftables objects")
+ 	}
+ 
+ 	// Accumulate service/endpoint chains and affinity sets to keep.
+diff --git a/vendor/modules.txt b/vendor/modules.txt
+index 30fec1ac28bdd..e7bc4bd5b43ee 100644
+--- a/vendor/modules.txt
++++ b/vendor/modules.txt
+@@ -1207,7 +1207,7 @@ sigs.k8s.io/apiserver-network-proxy/konnectivity-client/proto/client
+ ## explicit; go 1.23
+ sigs.k8s.io/json
+ sigs.k8s.io/json/internal/golang/encoding/json
+-# sigs.k8s.io/knftables v0.0.17
++# sigs.k8s.io/knftables v0.0.20
+ ## explicit; go 1.20
+ sigs.k8s.io/knftables
+ # sigs.k8s.io/kustomize/api v0.20.1
+diff --git a/vendor/sigs.k8s.io/knftables/CHANGELOG.md b/vendor/sigs.k8s.io/knftables/CHANGELOG.md
+index 4f1dc3a354226..babd009a470ea 100644
+--- a/vendor/sigs.k8s.io/knftables/CHANGELOG.md
++++ b/vendor/sigs.k8s.io/knftables/CHANGELOG.md
+@@ -1,5 +1,60 @@
+ # ChangeLog
+ 
++## v0.0.20
++
++- `List()` has been changed to use `nft list table` rather than, e.g.,
++  `nft list sets`, to ensure that it doesn't try to parse objects in
++  other tables (which may have been created by newer versions of `nft`
++  and might trigger crashes in older versions of `nft`; see
++  https://issues.k8s.io/136786). (`@danwinship` based on a previous PR
++  from `@kairosci`).
++
++- A new `ListAll()` method has been added to help work around the fact
++  that `List()` is now much less efficient with large tables.
++  (`@danwinship`).
++
++- `ListElements()` now correctly handles maps/sets with concatenated
++  keys/values including CIDR values. (`@danwinship`)
++
++## v0.0.19
++
++- Added the ability to use a single `knftables.Interface` (and a
++  single `knftables.Transaction`) with multiple tables/families. To do
++  this, pass `""` for the family and table name to `knftables.New`,
++  and then manually fill in the `Table` and `Family` fields in all
++  `Object`s you create. (`@danwinship`)
++
++- Added `tx.Destroy()`, corresponding to `nft destroy`. Since `nft
++  destroy` requires a new-ish kernel (6.3) and CLI (1.0.8), there are
++  also two new `knftables.New()` options: `RequireDestroy` if you want
++  construction to fail on older systems, or `EmulateDestroy` if you
++  want knftables to try to emulate "destroy" on older systems, with
++  some limitations. See [README.md](./README.md#destroy-operations)
++  for more details. (`@danwinship`)
++
++- Added `Counter` objects and the `tx.Reset()` verb, to support
++  nftables counters. (`@aroradaman`)
++
++- Added `Table.Flags` and `Chain.Policy`. (Note that at this time the
++  "owner" and "persist" table flags can't usefully be used with
++  knftables, since knftables opens a new connection to the kernel for
++  each transaction and so the table would become un-owned immediately
++  after it was created.) (`@danwinship`)
++
++- Fixed `Fake.ParseDump()` to correctly parse rules with raw payload
++  expressions (`@danwinship`) and `flow add` rules (`hongliangl`).
++
++## v0.0.18
++
++- Added locking to `Fake` to allow it to be safely used concurrently.
++  (`@npinaeva`)
++
++- Added a `Flowtable` object, and `Fake` support for correctly parsing
++  flowtable references. (`@aojea`)
++
++- Fixed a bug in `Fake.ParseDump`, which accidentally required the
++  table to have a comment. (`@danwinship`)
++
+ ## v0.0.17
+ 
+ - `ListRules()` now accepts `""` for the chain name, meaning to list
+diff --git a/vendor/sigs.k8s.io/knftables/CONTRIBUTING.md b/vendor/sigs.k8s.io/knftables/CONTRIBUTING.md
+index 50a4c6a370fc4..668b546684717 100644
+--- a/vendor/sigs.k8s.io/knftables/CONTRIBUTING.md
++++ b/vendor/sigs.k8s.io/knftables/CONTRIBUTING.md
+@@ -25,4 +25,4 @@ If your repo has certain guidelines for contribution, put them here ahead of the
+ knftables is maintained by [Kubernetes SIG Network](https://github.com/kubernetes/community/tree/master/sig-network).
+ 
+ - [sig-network slack channel](https://kubernetes.slack.com/messages/sig-network)
+-- [kubernetes-sig-network mailing list](https://groups.google.com/forum/#!forum/kubernetes-sig-network)
++- [kubernetes-sig-network mailing list](https://groups.google.com/a/kubernetes.io/g/sig-network)
+diff --git a/vendor/sigs.k8s.io/knftables/README.md b/vendor/sigs.k8s.io/knftables/README.md
+index 794b15bb71d0d..f531f21da4899 100644
+--- a/vendor/sigs.k8s.io/knftables/README.md
++++ b/vendor/sigs.k8s.io/knftables/README.md
+@@ -51,32 +51,42 @@ if err != nil {
+ }
+ ```
+ 
+-(If you want to operate on multiple tables or multiple nftables
+-families, you will need separate `Interface` objects for each. If you
+-need to check whether the system supports an nftables feature as with
+-`nft --check`, use `nft.Check()`, which works the same as `nft.Run()`
+-below.)
++`knftables.New` also takes a comma-separated list of options after the
++family and table name; see the documentation for that function for
++more information.
+ 
+-You can use the `List`, `ListRules`, and `ListElements` methods on the
+-`Interface` to check if objects exist. `List` returns the names of
+-`"chains"`, `"sets"`, or `"maps"` in the table, while `ListElements`
+-returns `Element` objects and `ListRules` returns *partial* `Rule`
+-objects.
++(If you want to operate on multiple tables or multiple nftables
++families, you have two options: you can either create separate
++`Interface` objects for each table, or you can create a single
++`Interface` and pass `""` for the family and table. In that case, you
++will need to explicitly fill in the `Family` and `Table` fields of
++every `Chain`, `Rule`, etc, object you create.)
++
++You can use the various `List*` methods on the `Interface` to check if
++objects exist. `ListAll` returns a map of the names of top-level
++objects in the table, sorted by object type, while `List` returns just
++the names of objects of a single type. `ListElements`, `ListRules`,
++and `ListCounters` returned parsed objects of the given types. Note
++that `ListRules` returns *partial* `Rule` objects; it does not fill in
++the `Rule` field.
+ 
+ ```golang
+-chains, err := nft.List(ctx, "chains")
++allChains, err := nft.List(ctx, "chains")
+ if err != nil {
+         return fmt.Errorf("could not list chains: %v", err)
+ }
++for chain := range sets.New(allChains...).Difference(expectedChains) {
++        tx.Delete(&knftables.Chain{Name: chain})
++}
+ 
+-FIXME
++// ...
+ 
+ elements, err := nft.ListElements(ctx, "map", "mymap")
+ if err != nil {
+         return fmt.Errorf("could not list map elements: %v", err)
+ }
+ 
+-FIXME
++...
+ ```
+ 
+ To make changes, create a `Transaction`, add the appropriate
+@@ -116,17 +126,81 @@ methods to check for those well-known error types. In a large
+ transaction, there is no supported way to determine exactly which
+ operation failed.
+ 
++(You can also pass a transaction to `nft.Check()`, which uses `nft
++--check`, but otherwise behaves the same as `nft.Run()`.)
++
+ ## `knftables.Transaction` operations
+ 
+ `knftables.Transaction` operations correspond to the top-level commands
+ in the `nft` binary. Currently-supported operations are:
+ 
+-- `tx.Add()`: adds an object, which may already exist, as with `nft add`
++- `tx.Add()`: creates an object if it does not already exist, as with `nft add`
+ - `tx.Create()`: creates an object, which must not already exist, as with `nft create`
+ - `tx.Flush()`: flushes the contents of a table/chain/set/map, as with `nft flush`
+-- `tx.Delete()`: deletes an object, as with `nft delete`
+-- `tx.Insert()`: inserts a rule before another rule, as with `nft insert rule`
++- `tx.Reset()`: resets a counter, as with `nft reset`
++- `tx.Delete()`: deletes an object, which must exist, as with `nft delete`
++- `tx.Destroy()`: deletes an object if it exists, as with `nft destroy`
++
++For `Rule` objects the semantics and operations are slightly different:
++
++- `tx.Add()`: appends a rule to a chain or adds it after an existing rule, as with `nft add rule`
++- `tx.Insert()`: prepends a rule to a chain or inserts it before another rule, as with `nft insert rule`
+ - `tx.Replace()`: replaces a rule, as with `nft replace rule`
++- `tx.Delete()`/`tx.Destroy()`: deletes the rule with the given `Handle`, as with `nft delete rule`/`nft destroy rule`
++
++### `Destroy` operations
++
++Actually doing `nft destroy` requires a fairly new kernel (6.3 or
++later) and `nft` binary (1.0.8 or later). Trying to run a transaction
++containing a `Destroy` operation on an older host will result in an
++error.
++
++There are two construct-time options to help out with this. First, you
++can specify `RequireDestroy`, if you want knftables construction to
++fail on older hosts:
++
++```golang
++nft, err := knftables.New(knftables.IPv4Family, "my-table", knftables.RequireDestroy)
++if err != nil {
++        ...
++```
++
++Alternatively, you can construct the `Interface` with the
++`EmulateDestroy` option:
++
++```golang
++nft, err := knftables.New(knftables.IPv4Family, "my-table", knftables.EmulateDestroy)
++```
++
++in which case knftables will attempt to emulate `nft destroy` if it is
++not available by doing a combination of an `add` and a `delete` (where
++the `add` will succeed whether the object previously existed or not,
++and then the `delete` will succeed because the object definitely
++exists at that point). To ensure that this emulation will work, if
++`EmulateDestroy` is in effect then `tx.Destroy()` will require that
++you pass it an object that is suitable for passing to both `tx.Add()`
++and `tx.Delete()` (even if the system you are currently on supports
++`nft destroy`). In particular, this means that when `EmulateDestroy`
++is in effect:
++
++  - You can only `Destroy()` objects by `Name` or `Key`, not by
++    `Handle`.
++
++  - You can't `Destroy()` a `Rule` (since `Rule`s can only be deleted
++    by `Handle`).
++
++  - If you include optional fields in the object (e.g. base chain
++    properties), they need to be correct (since an `Add()` would fail
++    if you passed different values). However, note that you *can* just
++    leave the optional fields unset.
++
++  - When `Destroy()`ing a `Set` or `Map` you must include the correct
++    `Type` (since an `Add()` would fail if you did not specify it or
++    specified it incorrectly).
++
++  - When `Destroy()`ing a `Map` `Element` you must include the correct
++    `Value` (since an `Add()` would fail if you did not specify it or
++    specified it incorrectly).
+ 
+ ## Objects
+ 
+@@ -134,11 +208,13 @@ The `Transaction` methods take arguments of type `knftables.Object`.
+ The currently-supported objects are:
+ 
+ - `Table`
++- `Flowtable`
+ - `Chain`
+ - `Rule`
+ - `Set`
+ - `Map`
+ - `Element`
++- `Counter`
+ 
+ Optional fields in objects can be filled in with the help of the
+ `PtrTo()` function, which just returns a pointer to its argument.
+@@ -159,8 +235,7 @@ the current state of the fake nftables database.
+ 
+ ## Missing APIs
+ 
+-Various top-level object types are not yet supported (notably the
+-"stateful objects" like `counter`).
++Various top-level object types are not yet supported.
+ 
+ Most IPTables libraries have an API for "add this rule only if it
+ doesn't already exist", but that does not seem as useful in nftables
+@@ -170,11 +245,6 @@ tend to have static rules and dynamic sets/maps, rather than having
+ dynamic rules. If you aren't sure if a chain has the correct rules,
+ you can just `Flush` it and recreate all of the rules.
+ 
+-The "destroy" (delete-without-ENOENT) command that exists in newer
+-versions of `nft` is not currently supported because it would be
+-unexpectedly heavyweight to emulate on systems that don't have it, so
+-it is better (for now) to force callers to implement it by hand.
+-
+ `ListRules` returns `Rule` objects without the `Rule` field filled in,
+ because it uses the JSON API to list the rules, but there is no easy
+ way to convert the JSON rule representation back into plaintext form.
+diff --git a/vendor/sigs.k8s.io/knftables/fake.go b/vendor/sigs.k8s.io/knftables/fake.go
+index 584c27a540ad6..0942fa276f0f6 100644
+--- a/vendor/sigs.k8s.io/knftables/fake.go
++++ b/vendor/sigs.k8s.io/knftables/fake.go
+@@ -23,20 +23,33 @@ import (
+ 	"regexp"
+ 	"sort"
+ 	"strings"
++	"sync"
+ )
+ 
+ // Fake is a fake implementation of Interface
+ type Fake struct {
+ 	nftContext
++	// mutex is used to protect Table/Tables and LastTransaction.
++	// When Table/Tables and LastTransaction are accessed directly, the caller must
++	// acquire Fake.RLock and release when finished.
++	sync.RWMutex
+ 
+ 	nextHandle int
+ 
+-	// Table contains the Interface's table. This will be `nil` until you `tx.Add()`
+-	// the table.
++	// Table contains the Interface's table (assuming the Fake has a default table).
++	// This will be `nil` until you `tx.Add()` the table.
++	// Make sure to acquire Fake.RLock before accessing Table in a concurrent environment.
+ 	Table *FakeTable
+ 
++	// Tables contains all tables known to Fake. This will be empty until you
++	// `tx.Add()` a table.
++	// Make sure to acquire Fake.RLock before accessing Tables in a concurrent environment.
++	Tables map[Family]map[string]*FakeTable
++
+ 	// LastTransaction is the last transaction passed to Run(). It will remain set until the
+ 	// next time Run() is called. (It is not affected by Check().)
++	// Make sure to acquire Fake.RLock before accessing LastTransaction in a
++	// concurrent environment.
+ 	LastTransaction *Transaction
+ }
+ 
+@@ -44,6 +57,9 @@ type Fake struct {
+ type FakeTable struct {
+ 	Table
+ 
++	// Flowtables contains the table's flowtables, keyed by name
++	Flowtables map[string]*FakeFlowtable
++
+ 	// Chains contains the table's chains, keyed by name
+ 	Chains map[string]*FakeChain
+ 
+@@ -52,6 +68,19 @@ type FakeTable struct {
+ 
+ 	// Maps contains the table's maps, keyed by name
+ 	Maps map[string]*FakeMap
++
++	// Counters contains the table's counters, keyed by name
++	Counters map[string]*FakeCounter
++}
++
++// FakeFlowtable wraps Flowtable for the Fake implementation
++type FakeFlowtable struct {
++	Flowtable
++}
++
++// FakeCounter wraps Counter for the Fake implementation
++type FakeCounter struct {
++	Counter
+ }
+ 
+ // FakeChain wraps Chain for the Fake implementation
+@@ -82,6 +111,11 @@ type FakeMap struct {
+ 
+ // NewFake creates a new fake Interface, for unit tests
+ func NewFake(family Family, table string) *Fake {
++	if (family == "") != (table == "") {
++		// NewFake doesn't have an error return value, so...
++		panic("family and table must either both be specified or both be empty")
++	}
++
+ 	return &Fake{
+ 		nftContext: nftContext{
+ 			family: family,
+@@ -92,8 +126,39 @@ func NewFake(family Family, table string) *Fake {
+ 
+ var _ Interface = &Fake{}
+ 
++// ListAll is part of Interface.
++func (fake *Fake) ListAll(_ context.Context) (map[string][]string, error) {
++	fake.RLock()
++	defer fake.RUnlock()
++	if fake.Table == nil {
++		return nil, notFoundError("no such table %q", fake.table)
++	}
++
++	result := make(map[string][]string)
++
++	for name := range fake.Table.Flowtables {
++		result["flowtable"] = append(result["flowtable"], name)
++	}
++	for name := range fake.Table.Chains {
++		result["chain"] = append(result["chain"], name)
++	}
++	for name := range fake.Table.Sets {
++		result["set"] = append(result["set"], name)
++	}
++	for name := range fake.Table.Maps {
++		result["map"] = append(result["map"], name)
++	}
++	for name := range fake.Table.Counters {
++		result["counter"] = append(result["counter"], name)
++	}
++
++	return result, nil
++}
++
+ // List is part of Interface.
+ func (fake *Fake) List(_ context.Context, objectType string) ([]string, error) {
++	fake.RLock()
++	defer fake.RUnlock()
+ 	if fake.Table == nil {
+ 		return nil, notFoundError("no such table %q", fake.table)
+ 	}
+@@ -101,6 +166,10 @@ func (fake *Fake) List(_ context.Context, objectType string) ([]string, error) {
+ 	var result []string
+ 
+ 	switch objectType {
++	case "flowtable", "flowtables":
++		for name := range fake.Table.Flowtables {
++			result = append(result, name)
++		}
+ 	case "chain", "chains":
+ 		for name := range fake.Table.Chains {
+ 			result = append(result, name)
+@@ -113,6 +182,10 @@ func (fake *Fake) List(_ context.Context, objectType string) ([]string, error) {
+ 		for name := range fake.Table.Maps {
+ 			result = append(result, name)
+ 		}
++	case "counter", "counters":
++		for name := range fake.Table.Counters {
++			result = append(result, name)
++		}
+ 
+ 	default:
+ 		return nil, fmt.Errorf("unsupported object type %q", objectType)
+@@ -123,6 +196,8 @@ func (fake *Fake) List(_ context.Context, objectType string) ([]string, error) {
+ 
+ // ListRules is part of Interface
+ func (fake *Fake) ListRules(_ context.Context, chain string) ([]*Rule, error) {
++	fake.RLock()
++	defer fake.RUnlock()
+ 	if fake.Table == nil {
+ 		return nil, notFoundError("no such table %q", fake.table)
+ 	}
+@@ -145,6 +220,8 @@ func (fake *Fake) ListRules(_ context.Context, chain string) ([]*Rule, error) {
+ 
+ // ListElements is part of Interface
+ func (fake *Fake) ListElements(_ context.Context, objectType, name string) ([]*Element, error) {
++	fake.RLock()
++	defer fake.RUnlock()
+ 	if fake.Table == nil {
+ 		return nil, notFoundError("no such %s %q", objectType, name)
+ 	}
+@@ -169,69 +246,119 @@ func (fake *Fake) NewTransaction() *Transaction {
+ 
+ // Run is part of Interface
+ func (fake *Fake) Run(_ context.Context, tx *Transaction) error {
++	fake.Lock()
++	defer fake.Unlock()
+ 	fake.LastTransaction = tx
+-	updatedTable, err := fake.run(tx)
++	updatedTables, err := fake.run(tx)
+ 	if err == nil {
+-		fake.Table = updatedTable
++		fake.Tables = updatedTables
++		if fake.family != "" && fake.table != "" {
++			fake.Table = updatedTables[fake.family][fake.table]
++		}
+ 	}
+ 	return err
+ }
+ 
+ // Check is part of Interface
+ func (fake *Fake) Check(_ context.Context, tx *Transaction) error {
++	fake.RLock()
++	defer fake.RUnlock()
+ 	_, err := fake.run(tx)
+ 	return err
+ }
+ 
+-func (fake *Fake) run(tx *Transaction) (*FakeTable, error) {
++// must be called with fake.lock held
++func (fake *Fake) run(tx *Transaction) (map[Family]map[string]*FakeTable, error) {
+ 	if tx.err != nil {
+ 		return nil, tx.err
+ 	}
+ 
+-	updatedTable := fake.Table.copy()
+-	for _, op := range tx.operations {
+-		// If the table hasn't been created, and this isn't a Table operation, then fail
+-		if updatedTable == nil {
+-			if _, ok := op.obj.(*Table); !ok {
+-				return nil, notFoundError("no such table \"%s %s\"", fake.family, fake.table)
+-			}
++	updatedTables := make(map[Family]map[string]*FakeTable)
++	for family := range fake.Tables {
++		updatedTables[family] = make(map[string]*FakeTable)
++		for name, table := range fake.Tables[family] {
++			updatedTables[family][name] = table.copy()
+ 		}
++	}
+ 
++	for _, op := range tx.operations {
+ 		if op.verb == addVerb || op.verb == createVerb || op.verb == insertVerb {
+ 			fake.nextHandle++
+ 		}
+ 
+ 		switch obj := op.obj.(type) {
+ 		case *Table:
+-			err := checkExists(op.verb, "table", fake.table, updatedTable != nil)
++			family, tableName, _ := getTable(&fake.nftContext, obj.Family, obj.Name)
++			table := updatedTables[family][tableName]
++			err := checkExists(op.verb, "table", fake.table, table != nil)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+ 			switch op.verb {
+ 			case flushVerb:
+-				updatedTable = nil
++				table = nil
+ 				fallthrough
+ 			case addVerb, createVerb:
+-				if updatedTable != nil {
++				if table != nil {
+ 					continue
+ 				}
+-				table := *obj
++				table = &FakeTable{
++					Table:      *obj,
++					Flowtables: make(map[string]*FakeFlowtable),
++					Chains:     make(map[string]*FakeChain),
++					Sets:       make(map[string]*FakeSet),
++					Maps:       make(map[string]*FakeMap),
++					Counters:   make(map[string]*FakeCounter),
++				}
+ 				table.Handle = PtrTo(fake.nextHandle)
+-				updatedTable = &FakeTable{
+-					Table:  table,
+-					Chains: make(map[string]*FakeChain),
+-					Sets:   make(map[string]*FakeSet),
+-					Maps:   make(map[string]*FakeMap),
++				if updatedTables[family] == nil {
++					updatedTables[family] = make(map[string]*FakeTable)
+ 				}
+-			case deleteVerb:
+-				updatedTable = nil
++				updatedTables[family][tableName] = table
++			case deleteVerb, destroyVerb:
++				if table != nil {
++					delete(updatedTables[family], tableName)
++				}
++			default:
++				return nil, fmt.Errorf("unhandled operation %q", op.verb)
++			}
++
++		case *Flowtable:
++			family, tableName, _ := getTable(&fake.nftContext, obj.Family, obj.Table)
++			table, err := fake.checkTable(updatedTables, family, tableName)
++			if err != nil {
++				return nil, err
++			}
++			existingFlowtable := table.Flowtables[obj.Name]
++			err = checkExists(op.verb, "flowtable", obj.Name, existingFlowtable != nil)
++			if err != nil {
++				return nil, err
++			}
++			switch op.verb {
++			case addVerb, createVerb:
++				if existingFlowtable != nil {
++					continue
++				}
++				flowtable := *obj
++				flowtable.Handle = PtrTo(fake.nextHandle)
++				table.Flowtables[obj.Name] = &FakeFlowtable{
++					Flowtable: flowtable,
++				}
++			case deleteVerb, destroyVerb:
++				// FIXME delete-by-handle
++				delete(table.Flowtables, obj.Name)
+ 			default:
+ 				return nil, fmt.Errorf("unhandled operation %q", op.verb)
+ 			}
+ 
+ 		case *Chain:
+-			existingChain := updatedTable.Chains[obj.Name]
+-			err := checkExists(op.verb, "chain", obj.Name, existingChain != nil)
++			family, tableName, _ := getTable(&fake.nftContext, obj.Family, obj.Table)
++			table, err := fake.checkTable(updatedTables, family, tableName)
++			if err != nil {
++				return nil, err
++			}
++			existingChain := table.Chains[obj.Name]
++			err = checkExists(op.verb, "chain", obj.Name, existingChain != nil)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+@@ -242,20 +369,25 @@ func (fake *Fake) run(tx *Transaction) (*FakeTable, error) {
+ 				}
+ 				chain := *obj
+ 				chain.Handle = PtrTo(fake.nextHandle)
+-				updatedTable.Chains[obj.Name] = &FakeChain{
++				table.Chains[obj.Name] = &FakeChain{
+ 					Chain: chain,
+ 				}
+ 			case flushVerb:
+ 				existingChain.Rules = nil
+-			case deleteVerb:
++			case deleteVerb, destroyVerb:
+ 				// FIXME delete-by-handle
+-				delete(updatedTable.Chains, obj.Name)
++				delete(table.Chains, obj.Name)
+ 			default:
+ 				return nil, fmt.Errorf("unhandled operation %q", op.verb)
+ 			}
+ 
+ 		case *Rule:
+-			existingChain := updatedTable.Chains[obj.Chain]
++			family, tableName, _ := getTable(&fake.nftContext, obj.Family, obj.Table)
++			table, err := fake.checkTable(updatedTables, family, tableName)
++			if err != nil {
++				return nil, err
++			}
++			existingChain := table.Chains[obj.Chain]
+ 			if existingChain == nil {
+ 				return nil, notFoundError("no such chain %q", obj.Chain)
+ 			}
+@@ -282,7 +414,7 @@ func (fake *Fake) run(tx *Transaction) (*FakeTable, error) {
+ 				refRule = *obj.Index
+ 			}
+ 
+-			if err := checkRuleRefs(obj, updatedTable); err != nil {
++			if err := checkRuleRefs(obj, table); err != nil {
+ 				return nil, err
+ 			}
+ 
+@@ -308,8 +440,13 @@ func (fake *Fake) run(tx *Transaction) (*FakeTable, error) {
+ 			}
+ 
+ 		case *Set:
+-			existingSet := updatedTable.Sets[obj.Name]
+-			err := checkExists(op.verb, "set", obj.Name, existingSet != nil)
++			family, tableName, _ := getTable(&fake.nftContext, obj.Family, obj.Table)
++			table, err := fake.checkTable(updatedTables, family, tableName)
++			if err != nil {
++				return nil, err
++			}
++			existingSet := table.Sets[obj.Name]
++			err = checkExists(op.verb, "set", obj.Name, existingSet != nil)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+@@ -320,20 +457,25 @@ func (fake *Fake) run(tx *Transaction) (*FakeTable, error) {
+ 				}
+ 				set := *obj
+ 				set.Handle = PtrTo(fake.nextHandle)
+-				updatedTable.Sets[obj.Name] = &FakeSet{
++				table.Sets[obj.Name] = &FakeSet{
+ 					Set: set,
+ 				}
+ 			case flushVerb:
+ 				existingSet.Elements = nil
+-			case deleteVerb:
++			case deleteVerb, destroyVerb:
+ 				// FIXME delete-by-handle
+-				delete(updatedTable.Sets, obj.Name)
++				delete(table.Sets, obj.Name)
+ 			default:
+ 				return nil, fmt.Errorf("unhandled operation %q", op.verb)
+ 			}
+ 		case *Map:
+-			existingMap := updatedTable.Maps[obj.Name]
+-			err := checkExists(op.verb, "map", obj.Name, existingMap != nil)
++			family, tableName, _ := getTable(&fake.nftContext, obj.Family, obj.Table)
++			table, err := fake.checkTable(updatedTables, family, tableName)
++			if err != nil {
++				return nil, err
++			}
++			existingMap := table.Maps[obj.Name]
++			err = checkExists(op.verb, "map", obj.Name, existingMap != nil)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+@@ -344,20 +486,25 @@ func (fake *Fake) run(tx *Transaction) (*FakeTable, error) {
+ 				}
+ 				mapObj := *obj
+ 				mapObj.Handle = PtrTo(fake.nextHandle)
+-				updatedTable.Maps[obj.Name] = &FakeMap{
++				table.Maps[obj.Name] = &FakeMap{
+ 					Map: mapObj,
+ 				}
+ 			case flushVerb:
+ 				existingMap.Elements = nil
+-			case deleteVerb:
++			case deleteVerb, destroyVerb:
+ 				// FIXME delete-by-handle
+-				delete(updatedTable.Maps, obj.Name)
++				delete(table.Maps, obj.Name)
+ 			default:
+ 				return nil, fmt.Errorf("unhandled operation %q", op.verb)
+ 			}
+ 		case *Element:
++			family, tableName, _ := getTable(&fake.nftContext, obj.Family, obj.Table)
++			table, err := fake.checkTable(updatedTables, family, tableName)
++			if err != nil {
++				return nil, err
++			}
+ 			if obj.Set != "" {
+-				existingSet := updatedTable.Sets[obj.Set]
++				existingSet := table.Sets[obj.Set]
+ 				if existingSet == nil {
+ 					return nil, notFoundError("no such set %q", obj.Set)
+ 				}
+@@ -372,22 +519,22 @@ func (fake *Fake) run(tx *Transaction) (*FakeTable, error) {
+ 					} else {
+ 						existingSet.Elements = append(existingSet.Elements, &element)
+ 					}
+-				case deleteVerb:
++				case deleteVerb, destroyVerb:
+ 					element := *obj
+ 					if i := findElement(existingSet.Elements, element.Key); i != -1 {
+ 						existingSet.Elements = append(existingSet.Elements[:i], existingSet.Elements[i+1:]...)
+-					} else {
++					} else if op.verb == deleteVerb {
+ 						return nil, notFoundError("no such element %q", strings.Join(element.Key, " . "))
+ 					}
+ 				default:
+ 					return nil, fmt.Errorf("unhandled operation %q", op.verb)
+ 				}
+ 			} else {
+-				existingMap := updatedTable.Maps[obj.Map]
++				existingMap := table.Maps[obj.Map]
+ 				if existingMap == nil {
+ 					return nil, notFoundError("no such map %q", obj.Map)
+ 				}
+-				if err := checkElementRefs(obj, updatedTable); err != nil {
++				if err := checkElementRefs(obj, table); err != nil {
+ 					return nil, err
+ 				}
+ 				switch op.verb {
+@@ -401,28 +548,84 @@ func (fake *Fake) run(tx *Transaction) (*FakeTable, error) {
+ 					} else {
+ 						existingMap.Elements = append(existingMap.Elements, &element)
+ 					}
+-				case deleteVerb:
++				case deleteVerb, destroyVerb:
+ 					element := *obj
+ 					if i := findElement(existingMap.Elements, element.Key); i != -1 {
+ 						existingMap.Elements = append(existingMap.Elements[:i], existingMap.Elements[i+1:]...)
+-					} else {
++					} else if op.verb == deleteVerb {
+ 						return nil, notFoundError("no such element %q", strings.Join(element.Key, " . "))
+ 					}
+ 				default:
+ 					return nil, fmt.Errorf("unhandled operation %q", op.verb)
+ 				}
+ 			}
++		case *Counter:
++			family, tableName, _ := getTable(&fake.nftContext, obj.Family, obj.Table)
++			table, err := fake.checkTable(updatedTables, family, tableName)
++			if err != nil {
++				return nil, err
++			}
++			existingCounter := table.Counters[obj.Name]
++			switch op.verb {
++			case addVerb, createVerb:
++				err := checkExists(op.verb, "counter", obj.Name, existingCounter != nil)
++				if err != nil {
++					return nil, err
++				}
++				if existingCounter != nil {
++					continue
++				}
++				obj.Handle = PtrTo(fake.nextHandle)
++				table.Counters[obj.Name] = &FakeCounter{*obj}
++			case resetVerb:
++				err := checkExists(op.verb, "counter", obj.Name, existingCounter != nil)
++				if err != nil {
++					return nil, err
++				}
++				table.Counters[obj.Name].Packets = PtrTo[uint64](0)
++				table.Counters[obj.Name].Bytes = PtrTo[uint64](0)
++			case deleteVerb:
++				if obj.Handle != nil {
++					var found bool
++					for _, counter := range table.Counters {
++						if *counter.Handle == *obj.Handle {
++							found = true
++							delete(table.Counters, counter.Name)
++							break
++						}
++					}
++					if !found {
++						return nil, notFoundError("no such counter %q", obj.Name)
++					}
++				} else {
++					err := checkExists(op.verb, "counter", obj.Name, existingCounter != nil)
++					if err != nil {
++						return nil, err
++					}
++					delete(table.Counters, obj.Name)
++				}
++			default:
++				return nil, fmt.Errorf("unhandled operation %q", op.verb)
++			}
+ 		default:
+ 			return nil, fmt.Errorf("unhandled object type %T", op.obj)
+ 		}
+ 	}
+ 
+-	return updatedTable, nil
++	return updatedTables, nil
++}
++
++func (fake *Fake) checkTable(updatedTables map[Family]map[string]*FakeTable, family Family, tableName string) (*FakeTable, error) {
++	table := updatedTables[family][tableName]
++	if table == nil {
++		return nil, notFoundError("no such table \"%s\" \"%s\"", family, tableName)
++	}
++	return table, nil
+ }
+ 
+ func checkExists(verb verb, objectType, name string, exists bool) error {
+ 	switch verb {
+-	case addVerb:
++	case addVerb, destroyVerb:
+ 		// It's fine if the object either exists or doesn't
+ 		return nil
+ 	case createVerb:
+@@ -441,12 +644,16 @@ func checkExists(verb verb, objectType, name string, exists bool) error {
+ func checkRuleRefs(rule *Rule, table *FakeTable) error {
+ 	words := strings.Split(rule.Rule, " ")
+ 	for i, word := range words {
+-		if strings.HasPrefix(word, "@") {
++		if strings.HasPrefix(word, "@") && !strings.Contains(word, ",") {
+ 			name := word[1:]
+-			if i > 0 && (words[i] == "map" || words[i] == "vmap") {
++			if i > 0 && (words[i-1] == "map" || words[i-1] == "vmap") {
+ 				if table.Maps[name] == nil {
+ 					return notFoundError("no such map %q", name)
+ 				}
++			} else if i > 0 && (words[i-1] == "offload" || words[i-1] == "add") {
++				if table.Flowtables[name] == nil {
++					return notFoundError("no such flowtable %q", name)
++				}
+ 			} else {
+ 				// recent nft lets you use a map in a set lookup
+ 				if table.Sets[name] == nil && table.Maps[name] == nil {
+@@ -480,20 +687,32 @@ func checkElementRefs(element *Element, table *FakeTable) error {
+ 
+ // Dump dumps the current contents of fake, in a way that looks like an nft transaction.
+ func (fake *Fake) Dump() string {
+-	if fake.Table == nil {
+-		return ""
+-	}
++	fake.RLock()
++	defer fake.RUnlock()
+ 
+ 	buf := &strings.Builder{}
++	for _, family := range sortKeys(fake.Tables) {
++		for _, tableName := range sortKeys(fake.Tables[family]) {
++			fake.dumpTable(buf, fake.Tables[family][tableName])
++		}
++	}
++	return buf.String()
++}
+ 
+-	table := fake.Table
++func (fake *Fake) dumpTable(buf *strings.Builder, table *FakeTable) {
++	flowtables := sortKeys(table.Flowtables)
+ 	chains := sortKeys(table.Chains)
+ 	sets := sortKeys(table.Sets)
+ 	maps := sortKeys(table.Maps)
++	counters := sortKeys(table.Counters)
+ 
+ 	// Write out all of the object adds first.
+ 
+ 	table.writeOperation(addVerb, &fake.nftContext, buf)
++	for _, fname := range flowtables {
++		ft := table.Flowtables[fname]
++		ft.writeOperation(addVerb, &fake.nftContext, buf)
++	}
+ 	for _, cname := range chains {
+ 		ch := table.Chains[cname]
+ 		ch.writeOperation(addVerb, &fake.nftContext, buf)
+@@ -506,7 +725,10 @@ func (fake *Fake) Dump() string {
+ 		m := table.Maps[mname]
+ 		m.writeOperation(addVerb, &fake.nftContext, buf)
+ 	}
+-
++	for _, cname := range counters {
++		m := table.Counters[cname]
++		m.writeOperation(addVerb, &fake.nftContext, buf)
++	}
+ 	// Now write their contents.
+ 
+ 	for _, cname := range chains {
+@@ -531,10 +753,10 @@ func (fake *Fake) Dump() string {
+ 			element.writeOperation(addVerb, &fake.nftContext, buf)
+ 		}
+ 	}
+-
+-	return buf.String()
+ }
+ 
++var commonRegexp = regexp.MustCompile(`add ([^ ]*) ([^ ]*) ([^ ]*)( (.*))?`)
++
+ // ParseDump can parse a dump for a given nft instance.
+ // It expects fake's table name and family in all rules.
+ // The best way to verify that everything important was properly parsed is to
+@@ -550,7 +772,6 @@ func (fake *Fake) ParseDump(data string) (err error) {
+ 		}
+ 	}()
+ 	tx := fake.NewTransaction()
+-	commonRegexp := regexp.MustCompile(fmt.Sprintf(`add %s %s %s (.*)`, noSpaceGroup, fake.family, fake.table))
+ 
+ 	for i, line = range lines {
+ 		line = strings.TrimSpace(line)
+@@ -559,12 +780,33 @@ func (fake *Fake) ParseDump(data string) (err error) {
+ 		}
+ 		match := commonRegexp.FindStringSubmatch(line)
+ 		if match == nil {
+-			return fmt.Errorf("could not parse, or wrong table/family")
++			return fmt.Errorf("could not parse")
++		}
++		family := Family(match[2])
++		table := match[3]
++
++		// If fake has a family and table specified then the parsed family and
++		// table must match (but then we clear them, because we don't want them
++		// to be added to the returned objects, for backward compatibility).
++		if fake.family != "" {
++			if family != fake.family {
++				return fmt.Errorf("wrong family %q in rule", family)
++			}
++			family = ""
++		}
++		if fake.table != "" {
++			if table != fake.table {
++				return fmt.Errorf("wrong table name %q in rule", table)
++			}
++			table = ""
+ 		}
++
+ 		var obj Object
+ 		switch match[1] {
+ 		case "table":
+ 			obj = &Table{}
++		case "flowtable":
++			obj = &Flowtable{}
+ 		case "chain":
+ 			obj = &Chain{}
+ 		case "rule":
+@@ -575,10 +817,12 @@ func (fake *Fake) ParseDump(data string) (err error) {
+ 			obj = &Set{}
+ 		case "element":
+ 			obj = &Element{}
++		case "counter":
++			obj = &Counter{}
+ 		default:
+ 			return fmt.Errorf("unknown object %s", match[1])
+ 		}
+-		err = obj.parse(match[2])
++		err = obj.parse(family, table, match[5])
+ 		if err != nil {
+ 			return err
+ 		}
+@@ -623,10 +867,17 @@ func (table *FakeTable) copy() *FakeTable {
+ 	}
+ 
+ 	tcopy := &FakeTable{
+-		Table:  table.Table,
+-		Chains: make(map[string]*FakeChain),
+-		Sets:   make(map[string]*FakeSet),
+-		Maps:   make(map[string]*FakeMap),
++		Table:      table.Table,
++		Flowtables: make(map[string]*FakeFlowtable),
++		Chains:     make(map[string]*FakeChain),
++		Sets:       make(map[string]*FakeSet),
++		Maps:       make(map[string]*FakeMap),
++		Counters:   make(map[string]*FakeCounter),
++	}
++	for name, flowtable := range table.Flowtables {
++		tcopy.Flowtables[name] = &FakeFlowtable{
++			Flowtable: flowtable.Flowtable,
++		}
+ 	}
+ 	for name, chain := range table.Chains {
+ 		tcopy.Chains[name] = &FakeChain{
+@@ -646,7 +897,9 @@ func (table *FakeTable) copy() *FakeTable {
+ 			Elements: append([]*Element{}, mapObj.Elements...),
+ 		}
+ 	}
+-
++	for name, counter := range table.Counters {
++		tcopy.Counters[name] = counter
++	}
+ 	return tcopy
+ }
+ 
+@@ -669,3 +922,12 @@ func (m *FakeMap) FindElement(key ...string) *Element {
+ 	}
+ 	return m.Elements[index]
+ }
++
++// ListCounters is part of Interface
++func (fake *Fake) ListCounters(_ context.Context) ([]*Counter, error) {
++	counters := make([]*Counter, len(fake.Table.Counters))
++	for _, fakeCounter := range fake.Table.Counters {
++		counters = append(counters, PtrTo(fakeCounter.Counter))
++	}
++	return counters, nil
++}
+diff --git a/vendor/sigs.k8s.io/knftables/nftables.go b/vendor/sigs.k8s.io/knftables/nftables.go
+index 8cb343806a300..df920f11f0ec7 100644
+--- a/vendor/sigs.k8s.io/knftables/nftables.go
++++ b/vendor/sigs.k8s.io/knftables/nftables.go
+@@ -40,9 +40,14 @@ type Interface interface {
+ 	// result.
+ 	Check(ctx context.Context, tx *Transaction) error
+ 
++	// ListAll returns a map containing the names of all objects in the table,
++	// grouped by object type. If there are no objects, this will return an empty list
++	// and no error.
++	ListAll(ctx context.Context) (map[string][]string, error)
++
+ 	// List returns a list of the names of the objects of objectType ("chain", "set",
+-	// or "map") in the table. If there are no such objects, this will return an empty
+-	// list and no error.
++	// "map" or "counter") in the table. If there are no such objects, this will
++	// return an empty list and no error.
+ 	List(ctx context.Context, objectType string) ([]string, error)
+ 
+ 	// ListRules returns a list of the rules in a chain, in order. If no chain name is
+@@ -58,8 +63,32 @@ type Interface interface {
+ 	// be "set" or "map".) If the set/map exists but contains no elements, this will
+ 	// return an empty list and no error.
+ 	ListElements(ctx context.Context, objectType, name string) ([]*Element, error)
++
++	// ListCounters returns a list of the counters in the table.
++	ListCounters(ctx context.Context) ([]*Counter, error)
+ }
+ 
++// Option is an optional nftables feature that an Interface might or might not support
++type Option string
++
++const (
++	// NoObjectCommentEmulation turns off the default knftables.Interface behavior of
++	// ignoring comments on Table, Chain, Set, and Map objects if the underlying CLI
++	// or kernel does not support them. (The only real reason to specify this is if
++	// you want to avoid doing any "nft check" calls at construction time.)
++	NoObjectCommentEmulation Option = "NoObjectCommentEmulation"
++
++	// RequireDestroy tells knftables.New to fail if the `nft destroy` command is not
++	// available.
++	RequireDestroy Option = "RequireDestroy"
++
++	// EmulateDestroy tells the Interface to emulate the `nft destroy` command if it
++	// is not available. If you pass this option, then that will restrict the ways
++	// that you can use the `tx.Destroy()` method to be compatible with destroy
++	// emulation; see the docs for that method for more details.
++	EmulateDestroy Option = "EmulateDestroy"
++)
++
+ type nftContext struct {
+ 	family Family
+ 	table  string
+@@ -67,6 +96,14 @@ type nftContext struct {
+ 	// noObjectComments is true if comments on Table/Chain/Set/Map are not supported.
+ 	// (Comments on Rule and Element are always supported.)
+ 	noObjectComments bool
++
++	// emulateDestroy is true if tx.Destroy() should restrict itself to destroy
++	// actions that are compatible with an emulated version of "nft destroy"
++	emulateDestroy bool
++
++	// hasDestroy is true emulateDestroy is true but the nft binary actually supports
++	// "destroy" so we don't need to bother emulating it.
++	hasDestroy bool
+ }
+ 
+ // realNFTables is an implementation of Interface
+@@ -80,11 +117,24 @@ type realNFTables struct {
+ 	path string
+ }
+ 
++func optionSet(options []Option, option Option) bool {
++	for _, o := range options {
++		if o == option {
++			return true
++		}
++	}
++	return false
++}
++
+ // newInternal creates a new nftables.Interface for interacting with the given table; this
+ // is split out from New() so it can be used from unit tests with a fakeExec.
+-func newInternal(family Family, table string, execer execer) (Interface, error) {
++func newInternal(family Family, table string, execer execer, options ...Option) (Interface, error) {
+ 	var err error
+ 
++	if (family == "") != (table == "") {
++		return nil, fmt.Errorf("family and table must either both be specified or both be empty")
++	}
++
+ 	nft := &realNFTables{
+ 		nftContext: nftContext{
+ 			family: family,
+@@ -108,30 +158,82 @@ func newInternal(family Family, table string, execer execer) (Interface, error)
+ 		return nil, fmt.Errorf("nft version must be v1.0.1 or later (got %s)", strings.TrimSpace(out))
+ 	}
+ 
++	testFamily := family
++	if testFamily == "" {
++		testFamily = InetFamily
++	}
++	testTable := table
++	if testTable == "" {
++		testTable = "test"
++	}
++
+ 	// Check that (a) nft works, (b) we have permission, (c) the kernel is new enough
+ 	// to support object comments.
+ 	tx := nft.NewTransaction()
+ 	tx.Add(&Table{
++		Family:  testFamily,
++		Name:    testTable,
+ 		Comment: PtrTo("test"),
+ 	})
+ 	if err := nft.Check(context.TODO(), tx); err != nil {
+-		// Try again, checking just that (a) nft works, (b) we have permission.
+-		tx := nft.NewTransaction()
+-		tx.Add(&Table{})
+-		if err := nft.Check(context.TODO(), tx); err != nil {
++		nft.noObjectComments = true
++		if !optionSet(options, NoObjectCommentEmulation) {
++			// Try again, checking just that (a) nft works, (b) we have permission.
++			tx := nft.NewTransaction()
++			tx.Add(&Table{
++				Family: testFamily,
++				Name:   testTable,
++			})
++			err = nft.Check(context.TODO(), tx)
++		}
++		if err != nil {
+ 			return nil, fmt.Errorf("could not run nftables command: %w", err)
+ 		}
++	}
+ 
+-		nft.noObjectComments = true
++	requireDestroy := optionSet(options, RequireDestroy)
++	emulateDestroy := optionSet(options, EmulateDestroy)
++	if requireDestroy || emulateDestroy {
++		// Check if "nft destroy" is available.
++		tx = nft.NewTransaction()
++		tx.Destroy(&Table{})
++		if err := nft.Check(context.TODO(), tx); err != nil {
++			if requireDestroy {
++				return nil, fmt.Errorf("`nft destroy` is not available: %w", err)
++			}
++		} else {
++			nft.hasDestroy = true
++		}
++		// Can't set this until after doing the test above
++		nft.emulateDestroy = emulateDestroy
+ 	}
+ 
+ 	return nft, nil
+ }
+ 
+-// New creates a new nftables.Interface for interacting with the given table. If nftables
+-// is not available/usable on the current host, it will return an error.
+-func New(family Family, table string) (Interface, error) {
+-	return newInternal(family, table, realExec{})
++// New creates a new nftables.Interface. If nftables is not available/usable on the
++// current host, it will return an error.
++//
++// Normally, family and table will specify the family and table to use for all operations
++// on the returned Interface. However, if you leave them empty (`""`), then the Interface
++// will have no associated family/table and (a) you must explicitly fill in those fields
++// in any objects you use in a Transaction, (b) you can't use any of the List* methods.
++//
++// In addition to the family and table, you can specify additional comma-separated options
++// to New(). The currently-supported options are:
++//
++//   - NoObjectCommentEmulation: disables the default knftables.Interface behavior of
++//     ignoring comments on Table, Chain, Set, and Map objects if the underlying CLI or
++//     kernel does not support them.
++//
++//   - RequireDestroy: require the system to support `nft destroy`; the New() call will
++//     fail with an error on older systems.
++//
++//   - EmulateDestroy: adjust the API of `tx.Destroy()` to make it possible to emulate via
++//     `nft add` and `nft delete` on systems that do not have `nft destroy`; see the docs
++//     for `tx.Destroy()` for more details.
++func New(family Family, table string, options ...Option) (Interface, error) {
++	return newInternal(family, table, realExec{}, options...)
+ }
+ 
+ // NewTransaction is part of Interface
+@@ -149,14 +251,11 @@ func (nft *realNFTables) Run(ctx context.Context, tx *Transaction) error {
+ 	}
+ 
+ 	nft.buffer.Reset()
+-	err := tx.populateCommandBuf(nft.buffer)
+-	if err != nil {
+-		return err
+-	}
++	tx.populateCommandBuf(nft.buffer)
+ 
+ 	cmd := exec.CommandContext(ctx, nft.path, "-f", "-")
+ 	cmd.Stdin = nft.buffer
+-	_, err = nft.exec.Run(cmd)
++	_, err := nft.exec.Run(cmd)
+ 	return err
+ }
+ 
+@@ -170,14 +269,11 @@ func (nft *realNFTables) Check(ctx context.Context, tx *Transaction) error {
+ 	}
+ 
+ 	nft.buffer.Reset()
+-	err := tx.populateCommandBuf(nft.buffer)
+-	if err != nil {
+-		return err
+-	}
++	tx.populateCommandBuf(nft.buffer)
+ 
+ 	cmd := exec.CommandContext(ctx, nft.path, "--check", "-f", "-")
+ 	cmd.Stdin = nft.buffer
+-	_, err = nft.exec.Run(cmd)
++	_, err := nft.exec.Run(cmd)
+ 	return err
+ }
+ 
+@@ -192,9 +288,9 @@ func jsonVal[T any](json map[string]interface{}, key string) (T, bool) {
+ 	return zero, false
+ }
+ 
+-// getJSONObjects takes the output of "nft -j list", validates it, and returns an array
+-// of just the objects of objectType.
+-func getJSONObjects(listOutput, objectType string) ([]map[string]interface{}, error) {
++// parseJSONResult takes the output of "nft -j list", validates it, and returns the array
++// of objects (including the "metainfo" object)
++func parseJSONObjects(listOutput string) ([]map[string]map[string]interface{}, error) {
+ 	// listOutput should contain JSON looking like:
+ 	//
+ 	// {
+@@ -225,23 +321,7 @@ func getJSONObjects(listOutput, objectType string) ([]map[string]interface{}, er
+ 	//   ]
+ 	// }
+ 	//
+-	// In this case, given objectType "chain", we would return
+-	//
+-	// [
+-	//   {
+-	//     "family": "ip",
+-	//     "table": "kube-proxy",
+-	//     "name": "KUBE-SERVICES",
+-	//     "handle": 3
+-	//   },
+-	//   {
+-	//     "family": "ip",
+-	//     "table": "kube-proxy",
+-	//     "name": "KUBE-NODEPORTS",
+-	//     "handle": 4
+-	//   },
+-	//   ...
+-	// ]
++	// parseJSONResult returns the array of objects tagged "nftables".
+ 
+ 	jsonResult := map[string][]map[string]map[string]interface{}{}
+ 	if err := json.Unmarshal([]byte(listOutput), &jsonResult); err != nil {
+@@ -261,6 +341,35 @@ func getJSONObjects(listOutput, objectType string) ([]map[string]interface{}, er
+ 	if version, ok := jsonVal[float64](metainfo, "json_schema_version"); !ok || version != 1.0 {
+ 		return nil, fmt.Errorf("could not find supported json_schema_version in nft output %q", listOutput)
+ 	}
++	return nftablesResult, nil
++}
++
++// getJSONObjects takes the output of "nft -j list", validates it, and returns an array
++// of just the objects of objectType.
++func getJSONObjects(listOutput, objectType string) ([]map[string]interface{}, error) {
++	// Given the result from the parseJSONObjects example above, and objectType
++	// "chain", we would return
++	//
++	// [
++	//   {
++	//     "family": "ip",
++	//     "table": "kube-proxy",
++	//     "name": "KUBE-SERVICES",
++	//     "handle": 3
++	//   },
++	//   {
++	//     "family": "ip",
++	//     "table": "kube-proxy",
++	//     "name": "KUBE-NODEPORTS",
++	//     "handle": 4
++	//   },
++	//   ...
++	// ]
++
++	nftablesResult, err := parseJSONObjects(listOutput)
++	if err != nil {
++		return nil, err
++	}
+ 
+ 	var objects []map[string]interface{}
+ 	for _, objContainer := range nftablesResult {
+@@ -272,37 +381,65 @@ func getJSONObjects(listOutput, objectType string) ([]map[string]interface{}, er
+ 	return objects, nil
+ }
+ 
++// ListAll is part of Interface.
++func (nft *realNFTables) ListAll(ctx context.Context) (map[string][]string, error) {
++	cmd := exec.CommandContext(ctx, nft.path, "--json", "list", "table", string(nft.family), nft.table)
++	out, err := nft.exec.Run(cmd)
++	if err != nil {
++		return nil, fmt.Errorf("failed to run nft: %w", err)
++	}
++
++	nftablesResult, err := parseJSONObjects(out)
++	if err != nil {
++		return nil, err
++	}
++
++	result := make(map[string][]string)
++	for i, objContainer := range nftablesResult {
++		if i == 0 {
++			// Skip "metainfo"
++			continue
++		}
++		for objectType, obj := range objContainer {
++			if name, ok := jsonVal[string](obj, "name"); ok {
++				result[objectType] = append(result[objectType], name)
++			}
++			// Shouldn't be more than one field in objContainer, but ignore it
++			// if there is.
++			break
++		}
++	}
++	return result, nil
++}
++
+ // List is part of Interface.
+ func (nft *realNFTables) List(ctx context.Context, objectType string) ([]string, error) {
+-	// All currently-existing nftables object types have plural forms that are just
+-	// the singular form plus 's'.
+-	var typeSingular, typePlural string
++	if nft.table == "" {
++		return nil, fmt.Errorf("can't use List() on a knftables.Interface with no associated family/table")
++	}
++
++	// objectType is allowed to be either singular or plural. All currently-existing
++	// nftables object types have plural forms that are just the singular form plus 's',
++	// and none have singular forms ending in 's'.
+ 	if objectType[len(objectType)-1] == 's' {
+-		typeSingular = objectType[:len(objectType)-1]
+-		typePlural = objectType
+-	} else {
+-		typeSingular = objectType
+-		typePlural = objectType + "s"
++		objectType = objectType[:len(objectType)-1]
+ 	}
+ 
+-	cmd := exec.CommandContext(ctx, nft.path, "--json", "list", typePlural, string(nft.family))
++	// We want to restrict nft to looking only at our table, so we have to do "list table"
++	// rather than any variant of "list <objectType>".
++	cmd := exec.CommandContext(ctx, nft.path, "--json", "list", "table", string(nft.family), nft.table)
+ 	out, err := nft.exec.Run(cmd)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to run nft: %w", err)
+ 	}
+ 
+-	objects, err := getJSONObjects(out, typeSingular)
++	objects, err := getJSONObjects(out, objectType)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+ 
+ 	var result []string
+ 	for _, obj := range objects {
+-		objTable, _ := jsonVal[string](obj, "table")
+-		if objTable != nft.table {
+-			continue
+-		}
+-
+ 		if name, ok := jsonVal[string](obj, "name"); ok {
+ 			result = append(result, name)
+ 		}
+@@ -312,7 +449,10 @@ func (nft *realNFTables) List(ctx context.Context, objectType string) ([]string,
+ 
+ // ListRules is part of Interface
+ func (nft *realNFTables) ListRules(ctx context.Context, chain string) ([]*Rule, error) {
+-	// If no chain is given, return all rules from within the table.
++	if nft.table == "" {
++		return nil, fmt.Errorf("can't use ListRules() on a knftables.Interface with no associated family/table")
++	}
++
+ 	var cmd *exec.Cmd
+ 	if chain == "" {
+ 		cmd = exec.CommandContext(ctx, nft.path, "--json", "list", "table", string(nft.family), nft.table)
+@@ -358,6 +498,10 @@ func (nft *realNFTables) ListRules(ctx context.Context, chain string) ([]*Rule,
+ 
+ // ListElements is part of Interface
+ func (nft *realNFTables) ListElements(ctx context.Context, objectType, name string) ([]*Element, error) {
++	if nft.table == "" {
++		return nil, fmt.Errorf("can't use ListElements() on a knftables.Interface with no associated family/table")
++	}
++
+ 	cmd := exec.CommandContext(ctx, nft.path, "--json", "list", objectType, string(nft.family), nft.table, name)
+ 	out, err := nft.exec.Run(cmd)
+ 	if err != nil {
+@@ -390,12 +534,14 @@ func (nft *realNFTables) ListElements(ctx context.Context, objectType, name stri
+ 			key, value = tuple[0], tuple[1]
+ 		}
+ 
+-		// If the element has a comment, then key will be a compound object like:
++		// If the element has a comment or a counter, then key will be a compound
++		// object like:
+ 		//
+ 		//   {
+ 		//     "elem": {
+ 		//       "val": "192.168.0.1",
+-		//       "comment": "this is a comment"
++		//       "comment": "this is a comment",
++		//       "counter": { "packets": 0, "bytes": 0 }
+ 		//     }
+ 		//   }
+ 		//
+@@ -473,15 +619,13 @@ func parseElementValue(json interface{}) ([]string, error) {
+ 		return []string{fmt.Sprintf("%d", int(val))}, nil
+ 	case map[string]interface{}:
+ 		if concat, _ := jsonVal[[]interface{}](val, "concat"); concat != nil {
+-			vals := make([]string, len(concat))
++			vals := make([]string, 0, len(concat))
+ 			for i := range concat {
+-				if str, ok := concat[i].(string); ok {
+-					vals[i] = str
+-				} else if num, ok := concat[i].(float64); ok {
+-					vals[i] = fmt.Sprintf("%d", int(num))
+-				} else {
+-					return nil, fmt.Errorf("could not parse element value %q", concat[i])
++				newVals, err := parseElementValue(concat[i])
++				if err != nil {
++					return nil, err
+ 				}
++				vals = append(vals, newVals...)
+ 			}
+ 			return vals, nil
+ 		} else if prefix, _ := jsonVal[map[string]interface{}](val, "prefix"); prefix != nil {
+@@ -512,3 +656,43 @@ func parseElementValue(json interface{}) ([]string, error) {
+ 
+ 	return nil, fmt.Errorf("could not parse element value %q", json)
+ }
++
++// ListCounters is part of Interface
++func (nft *realNFTables) ListCounters(ctx context.Context) ([]*Counter, error) {
++	if nft.table == "" {
++		return nil, fmt.Errorf("can't use ListCounters() on a knftables.Interface with no associated family/table")
++	}
++
++	cmd := exec.CommandContext(ctx, nft.path, "--json", "list", "counters", "table", string(nft.family), nft.table)
++	out, err := nft.exec.Run(cmd)
++	if err != nil {
++		return nil, fmt.Errorf("failed to run nft: %w", err)
++	}
++
++	objects, err := getJSONObjects(out, "counter")
++	if err != nil {
++		return nil, err
++	}
++
++	objectToCounter := func(object map[string]interface{}) *Counter {
++		counter := &Counter{
++			Name:    object["name"].(string),
++			Packets: PtrTo(uint64(object["packets"].(float64))),
++			Bytes:   PtrTo(uint64(object["bytes"].(float64))),
++		}
++		if handle, ok := jsonVal[string](object, "comment"); ok {
++			counter.Comment = PtrTo(handle)
++		}
++		if handle, ok := jsonVal[float64](object, "handle"); ok {
++			counter.Handle = PtrTo(int(handle))
++		}
++
++		return counter
++	}
++
++	counters := make([]*Counter, 0, len(objects))
++	for _, object := range objects {
++		counters = append(counters, objectToCounter(object))
++	}
++	return counters, nil
++}
+diff --git a/vendor/sigs.k8s.io/knftables/objects.go b/vendor/sigs.k8s.io/knftables/objects.go
+index 6a6287939c5b3..eb6e55e6f28f8 100644
+--- a/vendor/sigs.k8s.io/knftables/objects.go
++++ b/vendor/sigs.k8s.io/knftables/objects.go
+@@ -46,18 +46,43 @@ func getComment(commentGroup string) *string {
+ 	return &noQuotes
+ }
+ 
++func getTable(ctx *nftContext, family Family, table string) (Family, string, error) {
++	switch {
++	case ctx.family == "" && family == "":
++		return "", "", fmt.Errorf("must specify family and table for each object when the Interface has no default")
++	case ctx.family != "" && family != "" && family != ctx.family:
++		return "", "", fmt.Errorf("cannot override family or table when the Interface has a default")
++	case ctx.family != "" && family == "":
++		family = ctx.family
++	}
++
++	switch {
++	case ctx.table == "" && table == "":
++		return "", "", fmt.Errorf("must specify family and table for each object when the Interface has no default")
++	case ctx.table != "" && table != "" && table != ctx.table:
++		return "", "", fmt.Errorf("cannot override family or table when the Interface has a default")
++	case ctx.table != "" && table == "":
++		table = ctx.table
++	}
++
++	return family, table, nil
++}
++
+ var commentGroup = `(".*")`
+ var noSpaceGroup = `([^ ]*)`
+ var numberGroup = `([0-9]*)`
+ 
+ // Object implementation for Table
+-func (table *Table) validate(verb verb) error {
++func (table *Table) validate(verb verb, ctx *nftContext) error {
++	if _, _, err := getTable(ctx, table.Family, table.Name); err != nil {
++		return err
++	}
+ 	switch verb {
+ 	case addVerb, createVerb, flushVerb:
+ 		if table.Handle != nil {
+ 			return fmt.Errorf("cannot specify Handle in %s operation", verb)
+ 		}
+-	case deleteVerb:
++	case deleteVerb, destroyVerb:
+ 		// Handle can be nil or non-nil
+ 	default:
+ 		return fmt.Errorf("%s is not implemented for tables", verb)
+@@ -67,40 +92,76 @@ func (table *Table) validate(verb verb) error {
+ }
+ 
+ func (table *Table) writeOperation(verb verb, ctx *nftContext, writer io.Writer) {
++	family, tableName, _ := getTable(ctx, table.Family, table.Name)
++
+ 	// Special case for delete-by-handle
+-	if verb == deleteVerb && table.Handle != nil {
+-		fmt.Fprintf(writer, "delete table %s handle %d", ctx.family, *table.Handle)
++	if (verb == deleteVerb || verb == destroyVerb) && table.Handle != nil {
++		fmt.Fprintf(writer, "%s table %s handle %d", verb, family, *table.Handle)
+ 		return
+ 	}
+ 
+ 	// All other cases refer to the table by name
+-	fmt.Fprintf(writer, "%s table %s %s", verb, ctx.family, ctx.table)
++	fmt.Fprintf(writer, "%s table %s %s", verb, family, tableName)
+ 	if verb == addVerb || verb == createVerb {
+-		if table.Comment != nil && !ctx.noObjectComments {
+-			fmt.Fprintf(writer, " { comment %q ; }", *table.Comment)
++		hasComment := table.Comment != nil && !ctx.noObjectComments
++		if hasComment || len(table.Flags) != 0 {
++			fmt.Fprintf(writer, " {")
++			if hasComment {
++				fmt.Fprintf(writer, " comment %q ;", *table.Comment)
++			}
++			if len(table.Flags) != 0 {
++				fmt.Fprintf(writer, " flags ")
++				for i := range table.Flags {
++					if i > 0 {
++						fmt.Fprintf(writer, ",")
++					}
++					fmt.Fprintf(writer, "%s", table.Flags[i])
++				}
++				fmt.Fprintf(writer, " ;")
++			}
++			fmt.Fprintf(writer, " }")
+ 		}
+ 	}
+ 	fmt.Fprintf(writer, "\n")
+ }
+ 
+ var tableRegexp = regexp.MustCompile(fmt.Sprintf(
+-	`(?:{ comment %s ; })?`, commentGroup))
++	`(?:{ (?:comment %s ; )?(?:flags %s ; )?})?`, commentGroup, noSpaceGroup))
++
++func parseTableFlags(s string) []TableFlag {
++	var res []TableFlag
++	for _, flag := range strings.Split(s, ",") {
++		res = append(res, TableFlag(flag))
++	}
++	return res
++}
+ 
+-func (table *Table) parse(line string) error {
++func (table *Table) parse(family Family, tableName, line string) error {
+ 	match := tableRegexp.FindStringSubmatch(line)
+ 	if match == nil {
+ 		return fmt.Errorf("failed parsing table add command")
+ 	}
++	table.Family = family
++	table.Name = tableName
+ 	table.Comment = getComment(match[1])
++	if match[2] != "" {
++		table.Flags = parseTableFlags(match[2])
++	}
+ 	return nil
+ }
+ 
+ // Object implementation for Chain
+-func (chain *Chain) validate(verb verb) error {
++func (chain *Chain) validate(verb verb, ctx *nftContext) error {
++	if _, _, err := getTable(ctx, chain.Family, chain.Table); err != nil {
++		return err
++	}
+ 	if chain.Hook == nil {
+ 		if chain.Type != nil || chain.Priority != nil {
+ 			return fmt.Errorf("regular chain %q must not specify Type or Priority", chain.Name)
+ 		}
++		if chain.Policy != nil {
++			return fmt.Errorf("regular chain %q must not specify Policy", chain.Name)
++		}
+ 		if chain.Device != nil {
+ 			return fmt.Errorf("regular chain %q must not specify Device", chain.Name)
+ 		}
+@@ -118,7 +179,7 @@ func (chain *Chain) validate(verb verb) error {
+ 		if chain.Handle != nil {
+ 			return fmt.Errorf("cannot specify Handle in %s operation", verb)
+ 		}
+-	case deleteVerb:
++	case deleteVerb, destroyVerb:
+ 		if chain.Name == "" && chain.Handle == nil {
+ 			return fmt.Errorf("must specify either name or handle")
+ 		}
+@@ -130,13 +191,15 @@ func (chain *Chain) validate(verb verb) error {
+ }
+ 
+ func (chain *Chain) writeOperation(verb verb, ctx *nftContext, writer io.Writer) {
++	family, table, _ := getTable(ctx, chain.Family, chain.Table)
++
+ 	// Special case for delete-by-handle
+-	if verb == deleteVerb && chain.Handle != nil {
+-		fmt.Fprintf(writer, "delete chain %s %s handle %d", ctx.family, ctx.table, *chain.Handle)
++	if (verb == deleteVerb || verb == destroyVerb) && chain.Handle != nil {
++		fmt.Fprintf(writer, "%s chain %s %s handle %d", verb, family, table, *chain.Handle)
+ 		return
+ 	}
+ 
+-	fmt.Fprintf(writer, "%s chain %s %s %s", verb, ctx.family, ctx.table, chain.Name)
++	fmt.Fprintf(writer, "%s chain %s %s %s", verb, family, table, chain.Name)
+ 	if verb == addVerb || verb == createVerb {
+ 		if chain.Type != nil || (chain.Comment != nil && !ctx.noObjectComments) {
+ 			fmt.Fprintf(writer, " {")
+@@ -151,11 +214,14 @@ func (chain *Chain) writeOperation(verb verb, ctx *nftContext, writer io.Writer)
+ 				// versions of nft don't accept certain named priorities
+ 				// in all contexts (eg, "dstnat" priority in the "output"
+ 				// hook).
+-				if priority, err := ParsePriority(ctx.family, string(*chain.Priority)); err == nil {
++				if priority, err := ParsePriority(family, string(*chain.Priority)); err == nil {
+ 					fmt.Fprintf(writer, " priority %d ;", priority)
+ 				} else {
+ 					fmt.Fprintf(writer, " priority %s ;", *chain.Priority)
+ 				}
++				if chain.Policy != nil {
++					fmt.Fprintf(writer, " policy %s ;", *chain.Policy)
++				}
+ 			}
+ 			if chain.Comment != nil && !ctx.noObjectComments {
+ 				fmt.Fprintf(writer, " comment %q ;", *chain.Comment)
+@@ -168,18 +234,20 @@ func (chain *Chain) writeOperation(verb verb, ctx *nftContext, writer io.Writer)
+ 	fmt.Fprintf(writer, "\n")
+ }
+ 
+-// groups in []: [1]%s(?: {(?: type [2]%s hook [3]%s(?: device "[4]%s")(?: priority [5]%s ;))(?: comment [6]%s ;) })
++// groups in []: [1]%s(?: {(?: type [2]%s hook [3]%s(?: device "[4]%s")(?: priority [5]%s ;)(?: policy [6]%s ;)?)(?: comment [7]%s ;) })
+ var chainRegexp = regexp.MustCompile(fmt.Sprintf(
+-	`%s(?: {(?: type %s hook %s(?: device "%s")?(?: priority %s ;))?(?: comment %s ;)? })?`,
+-	noSpaceGroup, noSpaceGroup, noSpaceGroup, noSpaceGroup, noSpaceGroup, commentGroup))
++	`%s(?: {(?: type %s hook %s(?: device "%s")?(?: priority %s ;)(?: policy %s ;)?)?(?: comment %s ;)? })?`,
++	noSpaceGroup, noSpaceGroup, noSpaceGroup, noSpaceGroup, noSpaceGroup, noSpaceGroup, commentGroup))
+ 
+-func (chain *Chain) parse(line string) error {
++func (chain *Chain) parse(family Family, table, line string) error {
+ 	match := chainRegexp.FindStringSubmatch(line)
+ 	if match == nil {
+ 		return fmt.Errorf("failed parsing chain add command")
+ 	}
++	chain.Family = family
++	chain.Table = table
+ 	chain.Name = match[1]
+-	chain.Comment = getComment(match[6])
++	chain.Comment = getComment(match[7])
+ 	if match[2] != "" {
+ 		chain.Type = (*BaseChainType)(&match[2])
+ 	}
+@@ -192,11 +260,17 @@ func (chain *Chain) parse(line string) error {
+ 	if match[5] != "" {
+ 		chain.Priority = (*BaseChainPriority)(&match[5])
+ 	}
++	if match[6] != "" {
++		chain.Policy = (*BaseChainPolicy)(&match[6])
++	}
+ 	return nil
+ }
+ 
+ // Object implementation for Rule
+-func (rule *Rule) validate(verb verb) error {
++func (rule *Rule) validate(verb verb, ctx *nftContext) error {
++	if _, _, err := getTable(ctx, rule.Family, rule.Table); err != nil {
++		return err
++	}
+ 	if rule.Chain == "" {
+ 		return fmt.Errorf("no chain name specified for rule")
+ 	}
+@@ -217,7 +291,7 @@ func (rule *Rule) validate(verb verb) error {
+ 		if rule.Handle == nil {
+ 			return fmt.Errorf("must specify Handle with %s", verb)
+ 		}
+-	case deleteVerb:
++	case deleteVerb, destroyVerb:
+ 		if rule.Handle == nil {
+ 			return fmt.Errorf("must specify Handle with %s", verb)
+ 		}
+@@ -229,7 +303,9 @@ func (rule *Rule) validate(verb verb) error {
+ }
+ 
+ func (rule *Rule) writeOperation(verb verb, ctx *nftContext, writer io.Writer) {
+-	fmt.Fprintf(writer, "%s rule %s %s %s", verb, ctx.family, ctx.table, rule.Chain)
++	family, table, _ := getTable(ctx, rule.Family, rule.Table)
++
++	fmt.Fprintf(writer, "%s rule %s %s %s", verb, family, table, rule.Chain)
+ 	if rule.Index != nil {
+ 		fmt.Fprintf(writer, " index %d", *rule.Index)
+ 	} else if rule.Handle != nil {
+@@ -253,11 +329,13 @@ var ruleRegexp = regexp.MustCompile(fmt.Sprintf(
+ 	`%s(?: index %s)?(?: handle %s)? ([^"]*)(?: comment %s)?$`,
+ 	noSpaceGroup, numberGroup, numberGroup, commentGroup))
+ 
+-func (rule *Rule) parse(line string) error {
++func (rule *Rule) parse(family Family, table, line string) error {
+ 	match := ruleRegexp.FindStringSubmatch(line)
+ 	if match == nil {
+ 		return fmt.Errorf("failed parsing rule add command")
+ 	}
++	rule.Family = family
++	rule.Table = table
+ 	rule.Chain = match[1]
+ 	rule.Rule = match[4]
+ 	rule.Comment = getComment(match[5])
+@@ -271,21 +349,26 @@ func (rule *Rule) parse(line string) error {
+ }
+ 
+ // Object implementation for Set
+-func (set *Set) validate(verb verb) error {
++func (set *Set) validate(verb verb, ctx *nftContext) error {
++	if _, _, err := getTable(ctx, set.Family, set.Table); err != nil {
++		return err
++	}
+ 	switch verb {
+ 	case addVerb, createVerb:
++		if set.Name == "" {
++			return fmt.Errorf("no name specified for set")
++		}
+ 		if (set.Type == "" && set.TypeOf == "") || (set.Type != "" && set.TypeOf != "") {
+ 			return fmt.Errorf("set must specify either Type or TypeOf")
+ 		}
+ 		if set.Handle != nil {
+ 			return fmt.Errorf("cannot specify Handle in %s operation", verb)
+ 		}
+-		fallthrough
+ 	case flushVerb:
+ 		if set.Name == "" {
+ 			return fmt.Errorf("no name specified for set")
+ 		}
+-	case deleteVerb:
++	case deleteVerb, destroyVerb:
+ 		if set.Name == "" && set.Handle == nil {
+ 			return fmt.Errorf("must specify either name or handle")
+ 		}
+@@ -297,13 +380,15 @@ func (set *Set) validate(verb verb) error {
+ }
+ 
+ func (set *Set) writeOperation(verb verb, ctx *nftContext, writer io.Writer) {
++	family, table, _ := getTable(ctx, set.Family, set.Table)
++
+ 	// Special case for delete-by-handle
+-	if verb == deleteVerb && set.Handle != nil {
+-		fmt.Fprintf(writer, "delete set %s %s handle %d", ctx.family, ctx.table, *set.Handle)
++	if (verb == deleteVerb || verb == destroyVerb) && set.Handle != nil {
++		fmt.Fprintf(writer, "%v set %s %s handle %d", verb, family, table, *set.Handle)
+ 		return
+ 	}
+ 
+-	fmt.Fprintf(writer, "%s set %s %s %s", verb, ctx.family, ctx.table, set.Name)
++	fmt.Fprintf(writer, "%s set %s %s %s", verb, family, table, set.Name)
+ 	if verb == addVerb || verb == createVerb {
+ 		fmt.Fprintf(writer, " {")
+ 
+@@ -350,32 +435,39 @@ func (set *Set) writeOperation(verb verb, ctx *nftContext, writer io.Writer) {
+ 	fmt.Fprintf(writer, "\n")
+ }
+ 
+-func (set *Set) parse(line string) error {
++func (set *Set) parse(family Family, table, line string) error {
+ 	match := setRegexp.FindStringSubmatch(line)
+ 	if match == nil {
+ 		return fmt.Errorf("failed parsing set add command")
+ 	}
++	set.Family = family
++	set.Table = table
+ 	set.Name, set.Type, set.TypeOf, set.Flags, set.Timeout, set.GCInterval,
+ 		set.Size, set.Policy, set.Comment, set.AutoMerge = parseMapAndSetProps(match)
+ 	return nil
+ }
+ 
+ // Object implementation for Map
+-func (mapObj *Map) validate(verb verb) error {
++func (mapObj *Map) validate(verb verb, ctx *nftContext) error {
++	if _, _, err := getTable(ctx, mapObj.Family, mapObj.Table); err != nil {
++		return err
++	}
+ 	switch verb {
+ 	case addVerb, createVerb:
++		if mapObj.Name == "" {
++			return fmt.Errorf("no name specified for map")
++		}
+ 		if (mapObj.Type == "" && mapObj.TypeOf == "") || (mapObj.Type != "" && mapObj.TypeOf != "") {
+ 			return fmt.Errorf("map must specify either Type or TypeOf")
+ 		}
+ 		if mapObj.Handle != nil {
+ 			return fmt.Errorf("cannot specify Handle in %s operation", verb)
+ 		}
+-		fallthrough
+ 	case flushVerb:
+ 		if mapObj.Name == "" {
+ 			return fmt.Errorf("no name specified for map")
+ 		}
+-	case deleteVerb:
++	case deleteVerb, destroyVerb:
+ 		if mapObj.Name == "" && mapObj.Handle == nil {
+ 			return fmt.Errorf("must specify either name or handle")
+ 		}
+@@ -387,13 +479,15 @@ func (mapObj *Map) validate(verb verb) error {
+ }
+ 
+ func (mapObj *Map) writeOperation(verb verb, ctx *nftContext, writer io.Writer) {
++	family, table, _ := getTable(ctx, mapObj.Family, mapObj.Table)
++
+ 	// Special case for delete-by-handle
+-	if verb == deleteVerb && mapObj.Handle != nil {
+-		fmt.Fprintf(writer, "delete map %s %s handle %d", ctx.family, ctx.table, *mapObj.Handle)
++	if (verb == deleteVerb || verb == destroyVerb) && mapObj.Handle != nil {
++		fmt.Fprintf(writer, "%v map %s %s handle %d", verb, family, table, *mapObj.Handle)
+ 		return
+ 	}
+ 
+-	fmt.Fprintf(writer, "%s map %s %s %s", verb, ctx.family, ctx.table, mapObj.Name)
++	fmt.Fprintf(writer, "%s map %s %s %s", verb, family, table, mapObj.Name)
+ 	if verb == addVerb || verb == createVerb {
+ 		fmt.Fprintf(writer, " {")
+ 
+@@ -437,11 +531,13 @@ func (mapObj *Map) writeOperation(verb verb, ctx *nftContext, writer io.Writer)
+ 	fmt.Fprintf(writer, "\n")
+ }
+ 
+-func (mapObj *Map) parse(line string) error {
++func (mapObj *Map) parse(family Family, table, line string) error {
+ 	match := mapRegexp.FindStringSubmatch(line)
+ 	if match == nil {
+ 		return fmt.Errorf("failed parsing map add command")
+ 	}
++	mapObj.Family = family
++	mapObj.Table = table
+ 	mapObj.Name, mapObj.Type, mapObj.TypeOf, mapObj.Flags, mapObj.Timeout, mapObj.GCInterval,
+ 		mapObj.Size, mapObj.Policy, mapObj.Comment, _ = parseMapAndSetProps(match)
+ 	return nil
+@@ -500,7 +596,10 @@ func parseSetFlags(s string) []SetFlag {
+ }
+ 
+ // Object implementation for Element
+-func (element *Element) validate(verb verb) error {
++func (element *Element) validate(verb verb, ctx *nftContext) error {
++	if _, _, err := getTable(ctx, element.Family, element.Table); err != nil {
++		return err
++	}
+ 	if element.Map == "" && element.Set == "" {
+ 		return fmt.Errorf("no set/map name specified for element")
+ 	} else if element.Set != "" && element.Map != "" {
+@@ -519,7 +618,7 @@ func (element *Element) validate(verb verb) error {
+ 		if element.Map != "" && len(element.Value) == 0 {
+ 			return fmt.Errorf("no map value specified for map element")
+ 		}
+-	case deleteVerb:
++	case deleteVerb, destroyVerb:
+ 	default:
+ 		return fmt.Errorf("%s is not implemented for elements", verb)
+ 	}
+@@ -528,12 +627,14 @@ func (element *Element) validate(verb verb) error {
+ }
+ 
+ func (element *Element) writeOperation(verb verb, ctx *nftContext, writer io.Writer) {
++	family, table, _ := getTable(ctx, element.Family, element.Table)
++
+ 	name := element.Set
+ 	if name == "" {
+ 		name = element.Map
+ 	}
+ 
+-	fmt.Fprintf(writer, "%s element %s %s %s { %s", verb, ctx.family, ctx.table, name,
++	fmt.Fprintf(writer, "%s element %s %s %s { %s", verb, family, table, name,
+ 		strings.Join(element.Key, " . "))
+ 
+ 	if verb == addVerb || verb == createVerb {
+@@ -557,7 +658,7 @@ var mapElementRegexp = regexp.MustCompile(fmt.Sprintf(
+ var setElementRegexp = regexp.MustCompile(fmt.Sprintf(
+ 	`%s { ([^"]*)(?: comment %s)? }`, noSpaceGroup, commentGroup))
+ 
+-func (element *Element) parse(line string) error {
++func (element *Element) parse(family Family, table, line string) error {
+ 	// try to match map element first, since it has more groups, and if it matches, then we can be sure
+ 	// this is map element.
+ 	match := mapElementRegexp.FindStringSubmatch(line)
+@@ -567,6 +668,8 @@ func (element *Element) parse(line string) error {
+ 			return fmt.Errorf("failed parsing element add command")
+ 		}
+ 	}
++	element.Family = family
++	element.Table = table
+ 	element.Comment = getComment(match[3])
+ 	mapOrSetName := match[1]
+ 	element.Key = append(element.Key, strings.Split(match[2], " . ")...)
+@@ -579,3 +682,175 @@ func (element *Element) parse(line string) error {
+ 	}
+ 	return nil
+ }
++
++// Object implementation for Flowtable
++func (flowtable *Flowtable) validate(verb verb, ctx *nftContext) error {
++	if _, _, err := getTable(ctx, flowtable.Family, flowtable.Table); err != nil {
++		return err
++	}
++	switch verb {
++	case addVerb, createVerb:
++		if flowtable.Name == "" {
++			return fmt.Errorf("no name specified for flowtable")
++		}
++		if flowtable.Handle != nil {
++			return fmt.Errorf("cannot specify Handle in %s operation", verb)
++		}
++	case deleteVerb, destroyVerb:
++		if flowtable.Name == "" && flowtable.Handle == nil {
++			return fmt.Errorf("must specify either name or handle")
++		}
++	default:
++		return fmt.Errorf("%s is not implemented for flowtables", verb)
++	}
++
++	return nil
++}
++
++func (flowtable *Flowtable) writeOperation(verb verb, ctx *nftContext, writer io.Writer) {
++	family, table, _ := getTable(ctx, flowtable.Family, flowtable.Table)
++
++	// Special case for delete-by-handle
++	if (verb == deleteVerb || verb == destroyVerb) && flowtable.Handle != nil {
++		fmt.Fprintf(writer, "delete flowtable %s %s handle %d", family, table, *flowtable.Handle)
++		return
++	}
++
++	fmt.Fprintf(writer, "%s flowtable %s %s %s", verb, family, table, flowtable.Name)
++	if verb == addVerb || verb == createVerb {
++		fmt.Fprintf(writer, " {")
++
++		if flowtable.Priority != nil {
++			// since there is only one priority value allowed "filter" just use the value
++			// provided and not try to parse it.
++			fmt.Fprintf(writer, " hook ingress priority %s ;", *flowtable.Priority)
++		}
++
++		if len(flowtable.Devices) > 0 {
++			fmt.Fprintf(writer, " devices = { %s } ;", strings.Join(flowtable.Devices, ", "))
++		}
++
++		fmt.Fprintf(writer, " }")
++	}
++
++	fmt.Fprintf(writer, "\n")
++}
++
++// nft add flowtable inet example_table example_flowtable { hook ingress priority filter ; devices = { eth0 };  }
++var flowtableRegexp = regexp.MustCompile(fmt.Sprintf(
++	`%s(?: {(?: hook ingress priority %s ;)(?: devices = {(.*)} ;) })?`,
++	noSpaceGroup, noSpaceGroup))
++
++func (flowtable *Flowtable) parse(family Family, table, line string) error {
++	match := flowtableRegexp.FindStringSubmatch(line)
++	if match == nil {
++		return fmt.Errorf("failed parsing flowtableRegexp add command")
++	}
++	flowtable.Family = family
++	flowtable.Table = table
++	flowtable.Name = match[1]
++	if match[2] != "" {
++		flowtable.Priority = (*FlowtableIngressPriority)(&match[2])
++	}
++	// to avoid complex regular expressions the regex match everything between the brackets
++	// to match a single interface or a comma separated list of interfaces, and it is postprocessed
++	// here to remove the whitespaces.
++	if match[3] != "" {
++		devices := strings.Split(strings.TrimSpace(match[3]), ",")
++		for i := range devices {
++			devices[i] = strings.TrimSpace(devices[i])
++		}
++		if len(devices) > 0 {
++			flowtable.Devices = devices
++		}
++	}
++	return nil
++}
++
++// nft add counter [family] table name [{ [ packets packets bytes bytes ; ] [ comment comment ; }]
++// ([^ ]*)(?: {(?: packets ([0-9]*) bytes ([0-9]*) ;)?(?: comment (".*") ;)? })?
++var counterRegexp = regexp.MustCompile(fmt.Sprintf(
++	`%s(?: {(?: packets %s bytes %s ;)?(?: comment %s ;)? })?`,
++	noSpaceGroup, numberGroup, numberGroup, commentGroup))
++
++func (counter *Counter) parse(family Family, table, line string) error {
++	match := counterRegexp.FindStringSubmatch(line)
++	if match == nil {
++		return fmt.Errorf("failed parsing table add command")
++	}
++	counter.Family = family
++	counter.Table = table
++	counter.Name = match[1]
++	if match[2] != "" {
++		counter.Packets = PtrTo(uint64(*parseInt(match[2])))
++	}
++	if match[3] != "" {
++		counter.Bytes = PtrTo(uint64(*parseInt(match[3])))
++	}
++	if match[4] != "" {
++		counter.Comment = getComment(match[4])
++	}
++	return nil
++}
++
++// Object implementation for Counter
++func (counter *Counter) validate(verb verb, ctx *nftContext) error {
++	if _, _, err := getTable(ctx, counter.Family, counter.Table); err != nil {
++		return err
++	}
++	switch verb {
++	case addVerb, createVerb:
++		if counter.Name == "" {
++			return fmt.Errorf("no counter name specified")
++		}
++		if counter.Handle != nil {
++			return fmt.Errorf("cannot specify Handle in %s operation", verb)
++		}
++		if counter.Packets != nil && counter.Bytes == nil {
++			return fmt.Errorf("cannot specify Packets without Bytes in %s operation", verb)
++		}
++		if counter.Packets == nil && counter.Bytes != nil {
++			return fmt.Errorf("cannot specify Bytes without Packets in %s operation", verb)
++		}
++	case deleteVerb, destroyVerb:
++		if counter.Name == "" && counter.Handle == nil {
++			return fmt.Errorf("neither counter name nor handle specified")
++		}
++	case resetVerb:
++		if counter.Name == "" {
++			return fmt.Errorf("no counter name specified")
++		}
++	default:
++		return fmt.Errorf("%s is not implemented for counters", verb)
++	}
++	return nil
++}
++
++func (counter *Counter) writeOperation(verb verb, ctx *nftContext, writer io.Writer) {
++	family, table, _ := getTable(ctx, counter.Family, counter.Table)
++
++	// Special case for delete-by-handle
++	if (verb == deleteVerb || verb == destroyVerb) && counter.Handle != nil {
++		fmt.Fprintf(writer, "%s counter %s %s handle %d", verb, family, table, *counter.Handle)
++		return
++	}
++
++	fmt.Fprintf(writer, "%s counter %s %s ", verb, family, table)
++	switch verb {
++	case addVerb, createVerb:
++		fmt.Fprint(writer, counter.Name)
++		if counter.Comment != nil || counter.Packets != nil || counter.Bytes != nil {
++			fmt.Fprintf(writer, " {")
++			if counter.Packets != nil && counter.Bytes != nil {
++				fmt.Fprintf(writer, " packets %d bytes %d ;", *counter.Packets, *counter.Bytes)
++			}
++			if counter.Comment != nil && (verb == addVerb || verb == createVerb) {
++				fmt.Fprintf(writer, " comment %q ;", *counter.Comment)
++			}
++			fmt.Fprintf(writer, " }")
++		}
++	default:
++		fmt.Fprint(writer, counter.Name)
++	}
++	fmt.Fprintf(writer, "\n")
++}
+diff --git a/vendor/sigs.k8s.io/knftables/transaction.go b/vendor/sigs.k8s.io/knftables/transaction.go
+index 3063637ada9ec..7caf75280e958 100644
+--- a/vendor/sigs.k8s.io/knftables/transaction.go
++++ b/vendor/sigs.k8s.io/knftables/transaction.go
+@@ -44,29 +44,23 @@ const (
+ 	insertVerb  verb = "insert"
+ 	replaceVerb verb = "replace"
+ 	deleteVerb  verb = "delete"
++	destroyVerb verb = "destroy"
+ 	flushVerb   verb = "flush"
++	resetVerb   verb = "reset"
+ )
+ 
+ // populateCommandBuf populates the transaction as series of nft commands to the given bytes.Buffer.
+-func (tx *Transaction) populateCommandBuf(buf *bytes.Buffer) error {
+-	if tx.err != nil {
+-		return tx.err
+-	}
+-
++func (tx *Transaction) populateCommandBuf(buf *bytes.Buffer) {
+ 	for _, op := range tx.operations {
+ 		op.obj.writeOperation(op.verb, tx.nftContext, buf)
+ 	}
+-	return nil
+ }
+ 
+ // String returns the transaction as a string containing the nft commands; if there is
+ // a pending error, it will be output as a comment at the end of the transaction.
+ func (tx *Transaction) String() string {
+ 	buf := &bytes.Buffer{}
+-	for _, op := range tx.operations {
+-		op.obj.writeOperation(op.verb, tx.nftContext, buf)
+-	}
+-
++	tx.populateCommandBuf(buf)
+ 	if tx.err != nil {
+ 		fmt.Fprintf(buf, "# ERROR: %v", tx.err)
+ 	}
+@@ -83,7 +77,7 @@ func (tx *Transaction) operation(verb verb, obj Object) {
+ 	if tx.err != nil {
+ 		return
+ 	}
+-	if tx.err = obj.validate(verb); tx.err != nil {
++	if tx.err = obj.validate(verb, tx.nftContext); tx.err != nil {
+ 		return
+ 	}
+ 
+@@ -132,10 +126,63 @@ func (tx *Transaction) Flush(obj Object) {
+ 	tx.operation(flushVerb, obj)
+ }
+ 
+-// Delete adds an "nft delete" operation to tx, deleting obj. The Delete() call always
+-// succeeds, but if obj does not exist or cannot be deleted based on the information
+-// provided (eg, Handle is required but not set) then an error will be returned when the
+-// transaction is Run.
++// Delete adds an "nft delete" operation to tx, deleting obj, which must exist. The
++// Delete() call always succeeds, but if obj does not exist or cannot be deleted based on
++// the information provided (eg, Handle is required but not set) then an error will be
++// returned when the transaction is Run.
+ func (tx *Transaction) Delete(obj Object) {
+ 	tx.operation(deleteVerb, obj)
+ }
++
++// Reset adds a "nft reset" operation to tx, resetting obj (which must be a Counter).
++// The Reset() call always succeeds, but if obj does not exist then an error will be
++// returned when the transaction is Run.
++func (tx *Transaction) Reset(obj Object) {
++	tx.operation(resetVerb, obj)
++}
++
++// Destroy adds an "nft destroy" operation to tx, ensuring that obj does not exist, by
++// deleting it if it does exist. The Destroy() call always succeeds, but if obj cannot be
++// deleted based on the information provided (eg, Handle is required but not set) then an
++// error will be returned when the transaction is Run.
++//
++// Support for the actual "nft destroy" command requires kernel 6.3+ and nft 1.0.7+. You
++// can create the Interface with the `RequireDestroy` option if you want construction to
++// fail on older hosts. Alternatively, you can create the interface with the
++// `EmulateDestroy` option, in which case knftables will emulate Destroy by doing an
++// Add+Delete. In that case, obj must be valid for both an Add and a Delete. (Even if the
++// system you are on supports destroy, you may only call Destroy() in a
++// backward-compatible way if you are using `EmulateDestroy`.) In particular, this means:
++//
++//   - You can only Destroy() objects by Name or Key, not by Handle.
++//   - You can't Destroy() a Rule (since they can only be deleted by Handle).
++//   - You do not need to include optional values in obj (e.g. base chain properties) but
++//     if you do include them, they need to be correct.
++//   - When Destroy()ing a Set or Map you must include the correct Type.
++//   - When Destroy()ing a Map Element you must include the correct Value.
++func (tx *Transaction) Destroy(obj Object) {
++	if tx.err != nil {
++		return
++	}
++	if tx.err = obj.validate(destroyVerb, tx.nftContext); tx.err != nil {
++		return
++	}
++
++	if tx.emulateDestroy {
++		err := obj.validate(addVerb, tx.nftContext)
++		if err == nil {
++			err = obj.validate(deleteVerb, tx.nftContext)
++		}
++		if err != nil {
++			tx.err = fmt.Errorf("object is not compatible with EmulateDestroy: %w", err)
++			return
++		}
++	}
++
++	if tx.emulateDestroy && !tx.nftContext.hasDestroy {
++		tx.operations = append(tx.operations, operation{verb: addVerb, obj: obj})
++		tx.operations = append(tx.operations, operation{verb: deleteVerb, obj: obj})
++	} else {
++		tx.operations = append(tx.operations, operation{verb: destroyVerb, obj: obj})
++	}
++}
+diff --git a/vendor/sigs.k8s.io/knftables/types.go b/vendor/sigs.k8s.io/knftables/types.go
+index d8202bc011baf..3a34370287f8e 100644
+--- a/vendor/sigs.k8s.io/knftables/types.go
++++ b/vendor/sigs.k8s.io/knftables/types.go
+@@ -33,7 +33,7 @@ const (
+ // implement this interface.
+ type Object interface {
+ 	// validate validates an object for an operation
+-	validate(verb verb) error
++	validate(verb verb, ctx *nftContext) error
+ 
+ 	// writeOperation writes out an "nft" operation involving the object. It assumes
+ 	// that the object has been validated.
+@@ -43,7 +43,7 @@ type Object interface {
+ 	// command. line is the part of the line after "nft add <type> <family> <tablename>"
+ 	// (so for most types it starts with the object name).
+ 	// If error is returned, Object's fields may be partially filled, therefore Object should not be used.
+-	parse(line string) error
++	parse(family Family, table, line string) error
+ }
+ 
+ // Family is an nftables family
+@@ -71,13 +71,33 @@ const (
+ 	NetDevFamily Family = "netdev"
+ )
+ 
++// TableFlag represents a table flag
++type TableFlag string
++
++const (
++	// DormantFlag indicates that a table is not currently evaluated. (Its base chains
++	// are unregistered.)
++	DormantFlag TableFlag = "dormant"
++)
++
+ // Table represents an nftables table.
+ type Table struct {
++	// Family is the nftables family of the table. You do not normally need to fill
++	// this in because it will be filled in for you automatically from the Interface.
++	Family Family
++
++	// Name is the name of the table. You do not normally need to fill this in
++	// because it will be filled in for you automatically from the Interface.
++	Name string
++
+ 	// Comment is an optional comment for the table. (Requires kernel >= 5.10 and
+ 	// nft >= 0.9.7; otherwise this field will be silently ignored. Requires
+ 	// nft >= 1.0.8 to include comments in List() results.)
+ 	Comment *string
+ 
++	// Flags are the table flags
++	Flags []TableFlag
++
+ 	// Handle is an identifier that can be used to uniquely identify an object when
+ 	// deleting it. When adding a new object, this must be nil.
+ 	Handle *int
+@@ -185,9 +205,31 @@ const (
+ 	SNATPriority BaseChainPriority = "srcnat"
+ )
+ 
++// BaseChainPolicy sets what happens to packets not explicitly accepted or refused by a
++// base chain.
++type BaseChainPolicy string
++
++const (
++	// AcceptPolicy, which is the default, accepts any unmatched packets (though,
++	// as with any other nftables chain, a later chain can drop or reject it).
++	AcceptPolicy BaseChainPolicy = "accept"
++
++	// DropPolicy drops any unmatched packets.
++	DropPolicy BaseChainPolicy = "drop"
++)
++
+ // Chain represents an nftables chain; either a "base chain" (if Type, Hook, and Priority
+ // are specified), or a "regular chain" (if they are not).
+ type Chain struct {
++	// Family is the nftables family of the chain's table. You do not normally need to
++	// fill this in because it will be filled in for you automatically from the
++	// Interface.
++	Family Family
++
++	// Table is the name of the chain's table. You do not normally need to fill this
++	// in because it will be filled in for you automatically from the Interface.
++	Table string
++
+ 	// Name is the name of the chain.
+ 	Name string
+ 
+@@ -201,6 +243,10 @@ type Chain struct {
+ 	// a regular chain. You can call ParsePriority() to convert this to a number.
+ 	Priority *BaseChainPriority
+ 
++	// Policy is the policy for packets not explicitly accepted or refused by a base
++	// chain.
++	Policy *BaseChainPolicy
++
+ 	// Device is the network interface that the chain is attached to; this must be set
+ 	// for a base chain connected to the "ingress" or "egress" hooks, and unset for
+ 	// all other chains.
+@@ -218,6 +264,15 @@ type Chain struct {
+ 
+ // Rule represents a rule in a chain
+ type Rule struct {
++	// Family is the nftables family of the rule's table. You do not normally need to
++	// fill this in because it will be filled in for you automatically from the
++	// Interface.
++	Family Family
++
++	// Table is the name of the rule's table. You do not normally need to fill this
++	// in because it will be filled in for you automatically from the Interface.
++	Table string
++
+ 	// Chain is the name of the chain that contains this rule
+ 	Chain string
+ 
+@@ -277,6 +332,15 @@ const (
+ 
+ // Set represents the definition of an nftables set (but not its elements)
+ type Set struct {
++	// Family is the nftables family of the set's table. You do not normally need to
++	// fill this in because it will be filled in for you automatically from the
++	// Interface.
++	Family Family
++
++	// Table is the name of the set's table. You do not normally need to fill this
++	// in because it will be filled in for you automatically from the Interface.
++	Table string
++
+ 	// Name is the name of the set.
+ 	Name string
+ 
+@@ -322,6 +386,15 @@ type Set struct {
+ 
+ // Map represents the definition of an nftables map (but not its elements)
+ type Map struct {
++	// Family is the nftables family of the map's table. You do not normally need to
++	// fill this in because it will be filled in for you automatically from the
++	// Interface.
++	Family Family
++
++	// Table is the name of the map's table. You do not normally need to fill this
++	// in because it will be filled in for you automatically from the Interface.
++	Table string
++
+ 	// Name is the name of the map.
+ 	Name string
+ 
+@@ -363,6 +436,15 @@ type Map struct {
+ 
+ // Element represents a set or map element
+ type Element struct {
++	// Family is the nftables family of the element's table. You do not normally need
++	// to fill this in because it will be filled in for you automatically from the
++	// Interface.
++	Family Family
++
++	// Table is the name of the element's table. You do not normally need to fill this
++	// in because it will be filled in for you automatically from the Interface.
++	Table string
++
+ 	// Set is the name of the set that contains this element (or the empty string if
+ 	// this is a map element.)
+ 	Set string
+@@ -382,3 +464,69 @@ type Element struct {
+ 	// Comment is an optional comment for the element
+ 	Comment *string
+ }
++
++type FlowtableIngressPriority string
++
++const (
++	// FilterIngressPriority is the priority for the filter value in the Ingress hook
++	// that stands for 0.
++	FilterIngressPriority FlowtableIngressPriority = "filter"
++)
++
++// Flowtable represents an nftables flowtable.
++// https://wiki.nftables.org/wiki-nftables/index.php/Flowtables
++type Flowtable struct {
++	// Family is the nftables family of the flowtable's table. You do not normally
++	// need to fill this in because it will be filled in for you automatically from
++	// the Interface.
++	Family Family
++
++	// Table is the name of the flowtable's table. You do not normally need to fill
++	// this in because it will be filled in for you automatically from the Interface.
++	Table string
++
++	// Name is the name of the flowtable.
++	Name string
++
++	// The Priority can be a signed integer or FlowtableIngressPriority which stands for 0.
++	// Addition and subtraction can be used to set relative priority, e.g. filter + 5 equals to 5.
++	Priority *FlowtableIngressPriority
++
++	// The Devices are specified as iifname(s) of the input interface(s) of the traffic
++	// that should be offloaded.
++	Devices []string
++
++	// Handle is an identifier that can be used to uniquely identify an object when
++	// deleting it. When adding a new object, this must be nil
++	Handle *int
++}
++
++// Counter represents named counter
++type Counter struct {
++	// Family is the nftables family of the counter's table. You do not normally
++	// need to fill this in because it will be filled in for you automatically from
++	// the Interface.
++	Family Family
++
++	// Table is the name of the counter's table. You do not normally need to fill
++	// this in because it will be filled in for you automatically from the Interface.
++	Table string
++
++	// Name is the name of the named counter
++	Name string
++
++	// Comment is an optional comment for the counter
++	Comment *string
++
++	// Packets represents numbers of packets tracked by the counter.
++	// This will be filled in by ListCounters() but can be nil when creating new counter.
++	Packets *uint64
++
++	// Bytes represents numbers of bytes tracked by the counter.
++	// This will be filled in by ListCounters() but can be nil when creating new counter.
++	Bytes *uint64
++
++	// Handle is an identifier that can be used to uniquely identify an object when
++	// deleting it. When adding a new object, this must be nil
++	Handle *int
++}
