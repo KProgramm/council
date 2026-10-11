@@ -1,0 +1,10 @@
+services:
+  slim:
+    image: ghcr.io/agntcy/slim:1.4.0@sha256:7a7531cb81f1e24682f08364713da06a158411df3e90b687acf8d5836da5a78e
+    container_name: perch-slim
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:46357:46357"
+    volumes:
+      - ./transport/slim-server.yaml:/config.yaml:ro
+    command: ["/slim", "--config", "/config.yaml"]

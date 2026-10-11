@@ -100,10 +100,12 @@ class ReviewAgent:
         return await call_llm(system_prompt, user_content, use_cache=use_cache)
 
     async def speak(self, round_num: int) -> Message | None:
+        # Keep the round's input fixed while other reviewers finish and stream their output.
+        transcript = list(self.transcript)
         diff_message = next(
             (
                 msg
-                for msg in self.transcript
+                for msg in transcript
                 if msg.agent == "system" and msg.kind == "diff"
             ),
             None,
@@ -115,7 +117,7 @@ class ReviewAgent:
         system_prompt = prompt_path.read_text(encoding="utf-8")
         system_prompt += '\n\n' + (prompt_path.parent / 'review_protocol.md').read_text(encoding='utf-8')
         transcript_json = json.dumps(
-            [msg.model_dump(mode="json") for msg in self.transcript],
+            [msg.model_dump(mode="json") for msg in transcript],
             ensure_ascii=True,
         )
         user_content = (
@@ -151,7 +153,7 @@ class ReviewAgent:
                     round=round_num,
                 )
                 message = Message.model_validate(payload)
-                validate_assessment(message, self.transcript)
+                validate_assessment(message, transcript)
                 return message
             except (json.JSONDecodeError, TypeError):
                 validation_error = 'Return a single valid JSON object with the required fields.'

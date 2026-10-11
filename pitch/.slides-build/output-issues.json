@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "presentation": {
+    "id": "1TI2iKr-9TWRUTSG2RMkunhRmvvVe4s4YRVcLHj1oMsU",
+    "title": "Perch",
+    "revisionId": "TyyKn2sPVUtpCQ",
+    "slideCount": 6
+  },
+  "snapshotSha256": "a16865e2d79b24468a2659b4a1f8252118a20ea5a7b02cd09fecbf12cbe80bea",
+  "summary": {
+    "totalIssues": 0,
+    "reportedIssues": 0,
+    "truncated": false,
+    "bySeverity": {},
+    "byCode": {}
+  },
+  "issues": []
+}

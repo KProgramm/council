@@ -4,10 +4,23 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from server.app import app, ReviewStream, run_review
+from server.app import app, ReviewStream, run_review, pump
 
 
 class LiveReviewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_late_socket_gets_progress_and_full_error_before_close(self):
+        stream = ReviewStream()
+        await stream.publish_progress({'phase': 'reviewing', 'round': 1, 'agents': {'security': 'reviewing'}})
+        await stream.publish_progress({'agents': {'performance': 'complete'}})
+        stream.error = 'The security reviewer returned invalid output twice. ' * 5
+        stream.close()
+        socket = AsyncMock()
+        await pump(socket, stream)
+        self.assertEqual(socket.send_json.await_args_list[0].args[0]['agents'], {'security': 'reviewing', 'performance': 'complete'})
+        self.assertEqual(socket.send_json.await_args_list[1].args[0], {'type': 'error', 'message': stream.error})
+        self.assertLessEqual(len(socket.close.await_args.kwargs['reason'].encode()), 123)
+        self.assertFalse(stream.queues)
+
     async def test_unavailable_runtime_returns_error_without_recorded_messages(self):
         stream = ReviewStream()
         with patch('agents.runtime.run_council', new=AsyncMock(side_effect=NotImplementedError)):

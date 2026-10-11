@@ -15,7 +15,7 @@ AGENT_NAMES: tuple[AgentName, ...] = REVIEWERS
 MAX_EXTRA_ROUNDS = 3  # judge-requested rounds on top of the normal 3
 
 
-async def run_council(diff: str, bus: Bus, review_id: str) -> list[Message]:
+async def run_council(diff: str, bus: Bus, review_id: str, *, on_progress=None) -> list[Message]:
     """Create 5 agents, post the diff as round 0, run up to 3 rounds, return the transcript."""
     transcript: list[Message] = []
 
@@ -35,18 +35,27 @@ async def run_council(diff: str, bus: Bus, review_id: str) -> list[Message]:
     )
 
     async def run_round(round_num: int) -> None:
-        tasks = [asyncio.create_task(agent.speak(round_num)) for agent in agents]
+        if on_progress:
+            await on_progress({"phase": "reviewing", "round": round_num, "agents": {name: "reviewing" for name in AGENT_NAMES}})
+
+        async def speak_and_publish(agent):
+            response = await agent.speak(round_num)
+            # Let every reviewer snapshot its input before publishing a cached/instant response.
+            await asyncio.sleep(0)
+            if response is not None:
+                await bus.publish(response)
+            if on_progress:
+                await on_progress({"phase": "reviewing", "round": round_num, "agents": {agent.name: "passed" if response is None else "complete"}})
+
+        tasks = [asyncio.create_task(speak_and_publish(agent)) for agent in agents]
         try:
-            responses = await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks)
         except BaseException:
             # Stop button / client disconnect: cancel every in-flight reviewer call, then re-raise.
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
-        for response in responses:
-            if response is not None:
-                await bus.publish(response)
 
     outcome: str | None = None
     final_round = 0
@@ -69,6 +78,8 @@ async def run_council(diff: str, bus: Bus, review_id: str) -> list[Message]:
     verdict: JudgeVerdict | None = None
     if outcome != convergence.ESCALATE:
         for extra in range(MAX_EXTRA_ROUNDS + 1):
+            if on_progress:
+                await on_progress({"phase": "judging", "round": final_round})
             verdict = await judge(transcript, outcome)
             if verdict is None or verdict.settled or extra == MAX_EXTRA_ROUNDS:
                 break
@@ -88,6 +99,8 @@ async def run_council(diff: str, bus: Bus, review_id: str) -> list[Message]:
         if verdict is not None:
             outcome = verdict.decision
 
+    if on_progress:
+        await on_progress({"phase": "summarizing", "round": final_round})
     tradeoff_map = await build_map(transcript, outcome)
     if verdict is not None:
         tradeoff_map = tradeoff_map.model_copy(

@@ -96,9 +96,9 @@
 
 .perch-shell {
   display: flex;
-  height: 100dvh;
+  min-height: 100dvh;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   background-image:
     linear-gradient(to right, var(--grid) 1px, transparent 1px),
     linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
@@ -110,6 +110,16 @@
 .diff-panel,
 .agent-panel {
   min-height: 0;
+}
+
+.perch-workspace { align-items: start; }
+.diff-panel, .agent-panel { min-height: 0 !important; }
+.diff-view { height: clamp(240px, 48vh, 520px); flex: none; }
+.agent-list { flex: none; overflow: visible; }
+[hidden] { display: none !important; }
+
+@media (min-width: 900px) {
+  .perch-workspace { grid-template-columns: minmax(280px, .9fr) minmax(0, 1.6fr); }
 }
 
 .owl-sprite {

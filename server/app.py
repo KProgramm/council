@@ -66,6 +66,13 @@ class ReviewStream:
         self.history: list[Message] = []
         self.queues: set[asyncio.Queue] = set()
         self.done = False
+        self.progress = None
+
+    async def publish_progress(self, progress) -> None:
+        previous = self.progress or {}
+        self.progress = {**previous, **progress, "type": "progress", "agents": {**previous.get("agents", {}), **progress.get("agents", {})}}
+        for q in self.queues:
+            q.put_nowait(self.progress)
 
     async def publish(self, msg: Message) -> None:
         # Same signature as a Bus handler, so later it can be passed to bus.subscribe().
@@ -103,7 +110,7 @@ async def run_review(diff: str, review_id: str, stream: ReviewStream) -> None:
         bus = make_bus(review_id)
         bus.subscribe(stream.publish)
         try:
-            await run_council(diff, bus, review_id)
+            await run_council(diff, bus, review_id, on_progress=stream.publish_progress)
         finally:
             if hasattr(bus, "close"):  # SlimBus holds a SLIM session open
                 await bus.close()
@@ -123,6 +130,7 @@ review_lock = asyncio.Lock()
 
 
 async def run_serial_review(diff, review_id, stream):
+    await stream.publish_progress({"phase": "queued", "round": 0})
     async with review_lock:
         await run_review(diff, review_id, stream)
 
@@ -183,14 +191,23 @@ async def pump(ws: WebSocket, stream: ReviewStream) -> None:
     # switch tasks here, so no message can slip in between and be missed or doubled.
     stream.queues.add(q)
     backlog = list(stream.history)
+    progress = stream.progress
     if stream.done:
         q.put_nowait(None)
     try:
         for msg in backlog:
             await ws.send_text(msg.model_dump_json())
+        if progress:
+            await ws.send_json(progress)
         while (msg := await q.get()) is not None:
-            await ws.send_text(msg.model_dump_json())
-        await ws.close(code=1011 if stream.error else 1000, reason=stream.error or "")
+            if isinstance(msg, dict):
+                await ws.send_json(msg)
+            else:
+                await ws.send_text(msg.model_dump_json())
+        if stream.error:
+            await ws.send_json({"type": "error", "message": stream.error})
+        reason = (stream.error or "").encode('utf-8')[:120].decode('utf-8', errors='ignore')
+        await ws.close(code=1011 if stream.error else 1000, reason=reason)
     except WebSocketDisconnect:
         pass  # browser went away; the review keeps running
     finally:
@@ -217,4 +234,5 @@ def connections_busy():
 
 app.include_router(create_settings_router(ROOT / ".env", connections_busy))
 app.include_router(create_watch_router(lambda: app.state.watch, check_model_connection))
+app.mount("/fixtures/diffs", StaticFiles(directory=ROOT / "fixtures" / "diffs"), name="diffs")
 app.mount("/", StaticFiles(directory=ROOT / "web", html=True), name="web")

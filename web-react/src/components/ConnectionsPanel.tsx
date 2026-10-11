@@ -5,9 +5,9 @@ import { requestJSON, type ConnectionSettings, type Provider } from '@/lib/api'
 const field = 'h-9 w-full rounded-md border border-border bg-background px-2.5 text-xs'
 const providerLabels: Record<Provider, string> = { brev: 'Team model (Brev)', cisco: 'Cisco lab', paid: 'Paid provider' }
 
-type Props = { locked: boolean; repository?: string; githubError: string | null }
+type Props = { locked: boolean; repository?: string; githubError: string | null; settings?: ConnectionSettings | null; modelProvider?: Provider; onModelSaved?: (settings: ConnectionSettings) => void }
 
-export default function ConnectionsPanel({ locked, repository, githubError }: Props) {
+export default function ConnectionsPanel({ locked, repository, githubError, settings, modelProvider, onModelSaved }: Props) {
   const [saved, setSaved] = useState<ConnectionSettings | null>(null)
   const [tab, setTab] = useState<'github' | 'model'>('github')
   const [busy, setBusy] = useState(false)
@@ -40,6 +40,15 @@ export default function ConnectionsPanel({ locked, repository, githubError }: Pr
 
   useEffect(() => { if (githubError) { setTab('github'); setGithubStatus(githubError) } }, [githubError])
 
+  useEffect(() => {
+    if (!settings) return
+    const next = modelProvider ?? settings.provider
+    setSaved(settings); setProvider(next)
+    setModel(settings.providers[next].model); setBaseUrl(settings.providers[next].base_url)
+    setConcurrency(settings.max_concurrent_llm_calls); setApiKey(''); setClearKey(false)
+    if (modelProvider) setTab('model')
+  }, [settings, modelProvider])
+
   function pickProvider(next: Provider) {
     if (!saved) return
     setProvider(next); setApiKey(''); setClearKey(false)
@@ -61,6 +70,7 @@ export default function ConnectionsPanel({ locked, repository, githubError }: Pr
     if (!modelChanged) { setModelStatus('Checking saved connection…'); setModelStatus((await requestJSON<{ message: string }>('/settings/test', { target: 'model' })).message); return }
     const data = await requestJSON<ConnectionSettings>('/settings', { provider, model: model.trim(), base_url: baseUrl.trim(), max_concurrent_llm_calls: concurrency, llm_api_key: apiKey || null, clear_llm_api_key: clearKey }, 10000)
     render(data)
+    onModelSaved?.(data)
     setModelStatus('Model saved. Checking the connection…')
     try { setModelStatus((await requestJSON<{ message: string }>('/settings/test', { target: 'model' })).message) }
     catch (error) { setModelStatus(`Saved, but connection check failed: ${error instanceof Error ? error.message : 'unknown error'}`) }
