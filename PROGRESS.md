@@ -55,8 +55,10 @@ python3 -c "import json; from contracts.schema import Message, TradeoffMap; d=js
 ---
 
 ## Shiven: G3 Convergence + tradeoff map — DONE, merged to main (PR #5)
+## Shiven: G3 Convergence + tradeoff map — DONE, merged to main
 
 **Live:** merged via `shiven/convergence` (PR #5, including hardening commit c7ac996). Convergence checks latest reviewer positions, prioritizes critical escalations, requires matching positions at confidence >= 0.7 for consensus, and escalates after round 3. `run_council` builds and publishes a system verdict containing a validated `TradeoffMap`. Hardening retries one invalid map response, then falls back to a safe transcript-review map. Model-supplied message IDs and timestamps are discarded.
+**Live:** convergence checks latest reviewer positions, prioritizes critical escalations, requires matching positions at confidence >= 0.7 for consensus, and escalates after round 3. `run_council` builds and publishes a system verdict containing a validated `TradeoffMap`. Invalid map output gets one corrective retry, then a safe transcript-review fallback. Model-supplied message IDs and timestamps are discarded.
 
 **Departures from plan:** map generation shares G1's configured provider, semaphore, and response cache. The safe fallback asks a human to inspect the transcript; for an escalation, it names a reviewer pair only when their final positions differ.
 
@@ -66,16 +68,25 @@ python3 -c "import json; from contracts.schema import Message, TradeoffMap; d=js
 .venv/bin/python -m agents.runtime fixtures/diffs/demo.diff
 ```
 The offline suite currently has 13 passing tests. Live runs (Cisco, via G6's SLIM run) produced all three debate rounds and a verdict after the hardening changes.
+The offline suite currently has 18 passing tests. The live G8 demo evaluation also exercised the post-G3 council and verdict path.
 
+**Unblocks:** G8 evaluation.
 **Unblocks:** G8 evaluation.
 
 ---
 
-## Shiven: G8 Evidence evaluation — NOT STARTED
+## Shiven: G8 Evidence evaluation — DEMO RUN COMPLETE; G7 DATASET PENDING
 
-**Live:** no `eval/run_eval.py`, comparison results, summary CSV, or chart yet.
+**Live:** `eval/run_eval.py` runs a baseline review and the council, scores root-cause detection, distinct concerns, tradeoffs, and escalation, then writes per-diff JSON, `summary.csv`, and `chart.png`. On the demo diff, both baseline and council caught the root cause; baseline had 1 distinct concern and 0 tradeoffs, while council had 14 distinct concerns and 2 tradeoffs and escalated. These are results for one demo case, not a general performance claim.
 
-**Next:** after G3 merges, implement the baseline-versus-council evaluation in `eval/run_eval.py`. Start with `fixtures/diffs/demo.diff`; expand to Nico's dataset when G7 is ready.
+**Departures from plan:** `eval/dataset.json` is still empty and owned by Nico. Until G7 lands, the demo run accepts an explicit `--ground-truth` command-line value rather than changing Nico's dataset file. The generated per-diff JSON is gitignored; CSV and chart are available as artifacts.
+
+**Test it:**
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m eval.run_eval --ground-truth 'The webhook diff replaces hmac.compare_digest with ordinary equality for signature verification, enabling timing side-channel attacks.'
+```
+The live command makes LLM calls. Nico still needs to add real diffs/ground truth and manually spot-check three evaluation judgments when G7 is ready.
 
 **Unblocks:** the evidence chart and comparison for the pitch.
 
@@ -123,6 +134,7 @@ uvicorn server.app:app --reload
 ```
 
 **Unblocks:** G9 slides and screenshots (Mayu), G10 voices (Mayu), and the 7:00 PM end-to-end checkpoint once live mode is confirmed.
+**Unblocks:** Mayu's G9 evidence slide once G7 expands the dataset and results are rerun.
 
 ---
 
