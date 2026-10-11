@@ -165,7 +165,8 @@ def _parse_yes_no(response: str) -> bool:
 async def _score_root_cause(ground_truth: str, review: dict[str, Any]) -> bool:
     evaluator_prompt = (
         "You are a strict evaluation judge. Decide whether the review explicitly "
-        "identifies the stated root cause. Return only yes or no. Do not give credit "
+        "identifies the stated root cause. Return only a JSON object in this exact "
+        'shape: {"answer":"yes"} or {"answer":"no"}. Do not give credit '
         "for a related concern that does not identify the root cause."
     )
     response = await call_llm(

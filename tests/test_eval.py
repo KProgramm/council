@@ -17,6 +17,22 @@ class EvaluationHelperTests(unittest.TestCase):
         self.assertTrue(run_eval._parse_yes_no('{"answer": "yes"}'))
         self.assertFalse(run_eval._parse_yes_no('{"answer": "no"}'))
 
+    def test_root_cause_judge_prompt_requests_json(self) -> None:
+        async def check_prompt() -> bool:
+            with patch(
+                "eval.run_eval.call_llm",
+                new=AsyncMock(return_value='{"answer":"yes"}'),
+            ) as llm_call:
+                result = await run_eval._score_root_cause(
+                    "The signature comparison is timing-sensitive.",
+                    {"messages": []},
+                )
+
+            prompt = llm_call.await_args.args[0]
+            return result and "json" in prompt.casefold() and '{"answer":"yes"}' in prompt
+
+        self.assertTrue(asyncio.run(check_prompt()))
+
     def test_distinct_concerns_normalizes_duplicate_claims(self) -> None:
         duplicate_claim = Claim(
             file="app.py",

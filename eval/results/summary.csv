@@ -1,2 +1,9 @@
 file,baseline_caught_root_cause,council_caught_root_cause,baseline_distinct_concerns,council_distinct_concerns,baseline_tradeoffs_surfaced,council_tradeoffs_surfaced,baseline_escalated,council_escalated
-fixtures/diffs/demo.diff,True,True,1,14,0,2,False,True
+fixtures/diffs/requests-6667.diff,True,False,1,12,0,1,False,True
+fixtures/diffs/axios-3785.diff,True,True,1,7,0,2,False,True
+fixtures/diffs/fastapi-13314.diff,False,True,0,7,0,2,False,True
+fixtures/diffs/django-14709.diff,False,False,1,8,0,2,False,True
+fixtures/diffs/django-17969.diff,False,False,0,6,0,2,False,True
+fixtures/diffs/django-18316.diff,False,False,0,6,0,2,False,True
+fixtures/diffs/django-16248.diff,False,False,1,10,0,1,False,True
+fixtures/diffs/requests-3713.diff,False,False,2,9,0,2,False,True
