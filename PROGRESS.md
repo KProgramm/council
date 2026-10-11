@@ -54,9 +54,9 @@ python3 -c "import json; from contracts.schema import Message, TradeoffMap; d=js
 
 ---
 
-## Shiven: G3 Convergence + tradeoff map — IMPLEMENTED; hardening uncommitted
+## Shiven: G3 Convergence + tradeoff map — DONE, merged to main (PR #5)
 
-**Live:** core G3 is pushed on `shiven/convergence`. Convergence checks latest reviewer positions, prioritizes critical escalations, requires matching positions at confidence >= 0.7 for consensus, and escalates after round 3. `run_council` builds and publishes a system verdict containing a validated `TradeoffMap`. Uncommitted hardening retries one invalid map response, then falls back to a safe transcript-review map. Model-supplied message IDs and timestamps are discarded.
+**Live:** merged via `shiven/convergence` (PR #5, including hardening commit c7ac996). Convergence checks latest reviewer positions, prioritizes critical escalations, requires matching positions at confidence >= 0.7 for consensus, and escalates after round 3. `run_council` builds and publishes a system verdict containing a validated `TradeoffMap`. Hardening retries one invalid map response, then falls back to a safe transcript-review map. Model-supplied message IDs and timestamps are discarded.
 
 **Departures from plan:** map generation shares G1's configured provider, semaphore, and response cache. The safe fallback asks a human to inspect the transcript; for an escalation, it names a reviewer pair only when their final positions differ.
 
@@ -65,9 +65,9 @@ python3 -c "import json; from contracts.schema import Message, TradeoffMap; d=js
 .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python -m agents.runtime fixtures/diffs/demo.diff
 ```
-The offline suite currently has 13 passing tests. A full live run previously produced all three debate rounds and a verdict; rerun it after the latest retry/fallback changes before the G3 PR is merged.
+The offline suite currently has 13 passing tests. Live runs (Cisco, via G6's SLIM run) produced all three debate rounds and a verdict after the hardening changes.
 
-**Unblocks:** G8 evaluation after the G3 hardening changes are committed and G3 is merged.
+**Unblocks:** G8 evaluation.
 
 ---
 
@@ -81,11 +81,11 @@ The offline suite currently has 13 passing tests. A full live run previously pro
 
 ## G6: SLIM transport — DONE on branch krish/slim (PR pending)
 
-**Live:** `transport/slim_bus.py` `SlimBus` over a real SLIM group session (`ghcr.io/agntcy/slim` from Lungo's compose). Every `Message` goes hub -> SLIM server -> tap -> handlers; `publish()` returns only after handlers have run (same ordering guarantee as `MemoryBus`). Tested end to end with the real G1/G3 `run_council` on `fixtures/diffs/demo.diff` (local Ollama `qwen2.5:3b-instruct`): `BUS=slim` gave 12 messages over 3 rounds ending in a `system` verdict (`escalate`), 215s; `BUS=memory` gave the same shape, 270s. Content differs run to run because the LLM is nondeterministic. A bug found and fixed along the way: a SLIM receive timeout is also a `SessionError`, so the tap loop quit during LLM think time and dropped the session.
+**Live:** `transport/slim_bus.py` `SlimBus` over a real SLIM group session (`ghcr.io/agntcy/slim` from Lungo's compose). Every `Message` goes hub -> SLIM server -> tap -> handlers; `publish()` returns only after handlers have run (same ordering guarantee as `MemoryBus`). Tested end to end with the real G1/G3 `run_council` on `fixtures/diffs/demo.diff` (local Ollama `qwen2.5:3b-instruct`): `BUS=slim` gave 12 messages over 3 rounds ending in a `system` verdict (`escalate`), 215s; `BUS=memory` gave the same shape, 270s. Content differs run to run because the LLM is nondeterministic. Confirmation run on Cisco (`LLM_PROVIDER=cisco`, `azure/gpt-6-luna`, `BUS=slim`, same demo diff): 13 messages over 3 rounds ending in a `system` `verdict` whose `TradeoffMap` validates (`escalate`), ~33s, run twice with the same result. A bug found and fixed along the way: a SLIM receive timeout is also a `SessionError`, so the tap loop quit during LLM think time and dropped the session.
 
 **Departures from plan:**
 - Built on `slim_bindings` directly, not `start_streaming_groupchat`: that helper is a one-shot "supervisor asks, participants reply until end_message" flow. Verified semantics: members hear everyone except themselves, so SlimBus uses a hub (publishes) + tap (receives) pair.
-- Bus is chosen in `server/app.py` (`make_bus`), not `runtime.py`, because that is where the bus is built. `server/app.py` now also calls `load_dotenv()`.
+- Bus is chosen in `server/app.py` (`make_bus`), not `runtime.py` (the `python -m agents.runtime` CLI always uses `MemoryBus`, so `BUS=slim` only takes effect via the server or by calling `make_bus` + `run_council`), because that is where the bus is built. `server/app.py` now also calls `load_dotenv()`.
 - Added `slim-bindings==1.4.1` to requirements.txt (matches Lungo's SDK pin); `.env.example` gets `SLIM_ENDPOINT`, `SLIM_SHARED_SECRET`.
 - Compose service is `slim` (container `lungo-slim`), not `lungo-slim`. It needs `WORKFLOW_API_KEY` set just to parse the file.
 - Still one process: the 5 agents share one SlimBus. Agents on separate machines (stretch) is not built.
