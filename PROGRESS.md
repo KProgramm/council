@@ -38,6 +38,49 @@ python3 -c "import json; from contracts.schema import Message, TradeoffMap; d=js
 
 ---
 
+## Shiven: G1 Agent runtime — DONE, merged to main
+
+**Live:** `MemoryBus`, five provider-backed reviewers, up to three parallel debate rounds, prompt loading per round, response validation with one retry, and a CLI that prints each message as JSON. Cisco-backed live run produced the diff, five agents in each of three rounds, and a final verdict after G3 integration.
+
+**Departures from plan:** shared provider selection, concurrency control, and response caching are implemented in `agents/base.py`. `.cache/` is gitignored. The live provider is Cisco's proxy rather than Brev/Ollama because Brev provisioning was blocked by missing cloud credentials/workspace configuration.
+
+**Test it:**
+```bash
+.venv/bin/python -m unittest discover -s tests -p 'test_g1_runtime.py' -v
+.venv/bin/python -m agents.runtime fixtures/diffs/demo.diff
+```
+
+**Unblocks:** G3 convergence and tradeoff-map work.
+
+---
+
+## Shiven: G3 Convergence + tradeoff map — IMPLEMENTED; hardening uncommitted
+
+**Live:** core G3 is pushed on `shiven/convergence`. Convergence checks latest reviewer positions, prioritizes critical escalations, requires matching positions at confidence >= 0.7 for consensus, and escalates after round 3. `run_council` builds and publishes a system verdict containing a validated `TradeoffMap`. Uncommitted hardening retries one invalid map response, then falls back to a safe transcript-review map. Model-supplied message IDs and timestamps are discarded.
+
+**Departures from plan:** map generation shares G1's configured provider, semaphore, and response cache. The safe fallback asks a human to inspect the transcript; for an escalation, it names a reviewer pair only when their final positions differ.
+
+**Test it:**
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m agents.runtime fixtures/diffs/demo.diff
+```
+The offline suite currently has 13 passing tests. A full live run previously produced all three debate rounds and a verdict; rerun it after the latest retry/fallback changes before the G3 PR is merged.
+
+**Unblocks:** G8 evaluation after the G3 hardening changes are committed and G3 is merged.
+
+---
+
+## Shiven: G8 Evidence evaluation — NOT STARTED
+
+**Live:** no `eval/run_eval.py`, comparison results, summary CSV, or chart yet.
+
+**Next:** after G3 merges, implement the baseline-versus-council evaluation in `eval/run_eval.py`. Start with `fixtures/diffs/demo.diff`; expand to Nico's dataset when G7 is ready.
+
+**Unblocks:** the evidence chart and comparison for the pitch.
+
+---
+
 ## Template for the next entries
 
 ```

@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -28,6 +29,45 @@ class MemoryBusTests(unittest.IsolatedAsyncioTestCase):
         await bus.publish(message)
 
         self.assertCountEqual(received, [("first", message), ("second", message)])
+
+
+class ReviewAgentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_speak_ignores_model_supplied_id_and_timestamp(self) -> None:
+        bus = MemoryBus()
+        agent = ReviewAgent("security", bus)
+        await bus.publish(
+            Message(
+                review_id="test-review",
+                round=0,
+                agent="system",
+                kind="diff",
+                text="test diff",
+            )
+        )
+        response = {
+            "id": "model-chosen-id",
+            "ts": 1.0,
+            "kind": "assessment",
+            "position": "approve",
+            "confidence": 0.9,
+            "claims": [],
+            "references": [],
+            "text": "No material concerns found.",
+        }
+
+        with patch.object(
+            agent,
+            "_complete",
+            new=AsyncMock(return_value=json.dumps(response)),
+        ):
+            result = await agent.speak(1)
+
+        self.assertIsNotNone(result)
+        self.assertNotEqual(result.id, "model-chosen-id")
+        self.assertNotEqual(result.ts, 1.0)
+        self.assertEqual(result.agent, "security")
+        self.assertEqual(result.review_id, "test-review")
+        self.assertEqual(result.round, 1)
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):

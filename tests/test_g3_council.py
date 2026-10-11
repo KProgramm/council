@@ -112,7 +112,7 @@ class TradeoffMapTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.final_positions["security"], "approve_with_changes")
         self.assertEqual(len(result.unresolved), 2)
 
-    async def test_build_map_rejects_unresolved_item_without_two_agents(self) -> None:
+    async def test_build_map_retries_invalid_unresolved_item(self) -> None:
         transcript = [
             message("system", 0, None),
             message("security", 1, "block"),
@@ -125,18 +125,58 @@ class TradeoffMapTests(unittest.IsolatedAsyncioTestCase):
             kind="diff",
             text="test diff",
         )
-        response = {
+        invalid_response = {
             "resolved": [],
             "unresolved": ["The remaining question is whether to add a test."],
             "human_decisions": [],
         }
+        valid_response = {
+            "resolved": [],
+            "unresolved": ["security vs performance: review the opposing positions."],
+            "human_decisions": ["Should the compatibility change block release?"],
+        }
 
         with patch(
             "council.tradeoff_map.call_llm",
-            new=AsyncMock(return_value=json.dumps(response)),
+            new=AsyncMock(
+                side_effect=[json.dumps(invalid_response), json.dumps(valid_response)]
+            ),
         ):
-            with self.assertRaisesRegex(ValueError, "must name two reviewer agents"):
-                await build_map(transcript, "escalate")
+            result = await build_map(transcript, "escalate")
+
+        self.assertEqual(len(result.unresolved), 1)
+        self.assertIn("security vs performance", result.unresolved[0])
+
+    async def test_build_map_falls_back_after_invalid_retry(self) -> None:
+        transcript = [
+            Message(
+                review_id="test-review",
+                round=0,
+                agent="system",
+                kind="diff",
+                text="test diff",
+            ),
+            message("security", 1, "block"),
+            message("performance", 1, "approve"),
+        ]
+        invalid_response = json.dumps(
+            {
+                "resolved": [],
+                "unresolved": ["The remaining question is whether to add a test."],
+                "human_decisions": [],
+            }
+        )
+        llm_call = AsyncMock(side_effect=[invalid_response, invalid_response])
+
+        with patch("council.tradeoff_map.call_llm", new=llm_call):
+            result = await build_map(transcript, "escalate")
+
+        self.assertEqual(llm_call.await_count, 2)
+        self.assertEqual(result.review_id, "test-review")
+        self.assertEqual(result.outcome, "escalate")
+        self.assertEqual(result.final_positions["security"], "block")
+        self.assertIn("security vs performance", result.unresolved[0])
+        self.assertIn("review the transcript", result.human_decisions[0])
 
 
 if __name__ == "__main__":

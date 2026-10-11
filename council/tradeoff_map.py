@@ -36,34 +36,76 @@ async def build_map(transcript: list[Message], outcome: str) -> TradeoffMap:
         },
         ensure_ascii=True,
     )
-    raw_response = await call_llm(system_prompt, user_content)
-    payload = json.loads(raw_response)
-    if not isinstance(payload, dict):
-        raise ValueError("The tradeoff-map response must be a JSON object")
-
     latest_positions: dict[str, str] = {}
     for message in transcript:
         if message.agent != "system" and message.position is not None:
             latest_positions[message.agent] = message.position
 
-    payload.update(
+    reviewer_names = set(latest_positions)
+    validation_error = ""
+    for attempt in range(2):
+        retry_content = user_content
+        if validation_error:
+            retry_content += (
+                "\n\nYour previous response failed validation: "
+                f"{validation_error[:1000]}\n"
+                "Correct the response and return only a valid TradeoffMap JSON object."
+            )
+        raw_response = await call_llm(
+            system_prompt,
+            retry_content,
+            use_cache=(attempt == 0),
+        )
+        try:
+            payload = json.loads(raw_response)
+            if not isinstance(payload, dict):
+                raise ValueError("The tradeoff-map response must be a JSON object")
+
+            payload.update(
+                review_id=diff_message.review_id,
+                outcome=outcome,
+                final_positions=latest_positions,
+            )
+            tradeoff_map = TradeoffMap.model_validate(payload)
+
+            for item in tradeoff_map.unresolved:
+                named_reviewers = {
+                    name
+                    for name in reviewer_names
+                    if re.search(rf"\b{re.escape(name)}\b", item, re.IGNORECASE)
+                }
+                if len(named_reviewers) < 2:
+                    raise ValueError(
+                        "Every unresolved item must name two reviewer agents: "
+                        f"{item!r}"
+                    )
+
+            return tradeoff_map
+        except (TypeError, ValueError) as error:
+            validation_error = str(error)
+
+    unresolved: list[str] = []
+    if outcome == "escalate":
+        reviewer_positions = list(latest_positions.items())
+        for index, (left_agent, left_position) in enumerate(reviewer_positions):
+            for right_agent, right_position in reviewer_positions[index + 1 :]:
+                if left_position != right_position:
+                    unresolved.append(
+                        f"{left_agent} vs {right_agent}: the summary could not be "
+                        "validated; inspect the transcript for the tradeoff."
+                    )
+                    break
+            if unresolved:
+                break
+
+    return TradeoffMap(
         review_id=diff_message.review_id,
         outcome=outcome,
         final_positions=latest_positions,
+        resolved=[],
+        unresolved=unresolved,
+        human_decisions=[
+            "The tradeoff summary could not be validated; review the transcript "
+            "before deciding."
+        ],
     )
-    tradeoff_map = TradeoffMap.model_validate(payload)
-
-    reviewer_names = set(latest_positions)
-    for item in tradeoff_map.unresolved:
-        named_reviewers = {
-            name
-            for name in reviewer_names
-            if re.search(rf"\b{re.escape(name)}\b", item, re.IGNORECASE)
-        }
-        if len(named_reviewers) < 2:
-            raise ValueError(
-                "Every unresolved item must name two reviewer agents: "
-                f"{item!r}"
-            )
-
-    return tradeoff_map

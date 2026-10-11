@@ -145,6 +145,8 @@ class ReviewAgent:
                     return None
                 if not isinstance(payload, dict):
                     continue
+                payload.pop("id", None)
+                payload.pop("ts", None)
                 payload.update(
                     review_id=diff_message.review_id,
                     agent=self.name,
