@@ -12,15 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, f
 import httpx
 
 from server.security import LOCAL_HOSTS, local_only
-
-TEAM_MODEL_URL = "https://council-model-api-5l9p30nnv.gobrev.dev"
-KEY_NAMES = {"brev": "BREV_API_KEY", "cisco": "CISCO_API_KEY", "paid": "PAID_API_KEY"}
-
-
-def provider_key(provider):
-    return os.getenv(KEY_NAMES[provider], os.getenv("LLM_API_KEY", "") if provider == os.getenv("LLM_PROVIDER", "brev") else "").strip()
-
-
+from integrations.model_config import TEAM_MODEL_URL, KEY_NAMES, MODEL_NAMES, provider_key, provider_config
 
 class ConnectionSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -74,11 +66,7 @@ def current_settings() -> dict:
         concurrency = 3
     return {
         "provider": provider,
-        "providers": {
-            "brev": {"model": os.getenv("OLLAMA_MODEL", "llama3.1:8b"), "base_url": public_url(os.getenv("OLLAMA_BASE_URL", TEAM_MODEL_URL))},
-            "cisco": {"model": os.getenv("LLM_MODEL", ""), "base_url": public_url(os.getenv("LLM_BASE_URL", ""))},
-            "paid": {"model": os.getenv("LLM_MODEL", ""), "base_url": ""},
-        },
+        "providers": {name: {**provider_config(name), "base_url": public_url(provider_config(name)["base_url"])} for name in KEY_NAMES},
         "max_concurrent_llm_calls": concurrency,
         "github_token_configured": bool(os.getenv("GITHUB_TOKEN", "").strip()),
         "llm_api_key_configured": bool(provider_key(provider)) if provider in KEY_NAMES else False,
@@ -155,6 +143,9 @@ def create_settings_router(env_path: Path, reviews_active: Callable[[], bool]) -
             if clear or raw:
                 updates[key] = "" if clear else raw
         previous_provider = os.getenv("LLM_PROVIDER", "brev")
+        if previous_provider in KEY_NAMES:
+            updates[MODEL_NAMES[previous_provider]] = provider_config(previous_provider)["model"]
+        updates[MODEL_NAMES[settings.provider]] = settings.model
         if previous_provider in KEY_NAMES and previous_provider != settings.provider:
             updates[KEY_NAMES[previous_provider]] = provider_key(previous_provider)
         api_key = updates.get("LLM_API_KEY", provider_key(settings.provider)).strip()
@@ -190,6 +181,8 @@ def create_settings_router(env_path: Path, reviews_active: Callable[[], bool]) -
         if req.target == "model":
             return await check_model_connection()
         from integrations.github import RepositoryInput, github_client, list_pull_requests
+        if not req.repository.strip():
+            raise HTTPException(422, "Enter a repository below, then check access or load its PRs.")
         async for client in github_client():
             data = await list_pull_requests(RepositoryInput(repository=req.repository), client)
             return {"ok": True, "message": f"GitHub can read {data['repository']}."}
@@ -209,12 +202,12 @@ class ConnectionTest(BaseModel):
 
 
 async def check_model_connection():
-    provider = os.getenv("LLM_PROVIDER", "brev")
+    provider = os.getenv("LLM_PROVIDER", "brev").lower()
     if provider not in KEY_NAMES:
         raise HTTPException(422, "Choose a model connection first.")
     key = provider_key(provider)
-    model = os.getenv("OLLAMA_MODEL" if provider == "brev" else "LLM_MODEL", "").strip()
-    base = os.getenv("OLLAMA_BASE_URL" if provider == "brev" else "LLM_BASE_URL", "").rstrip("/")
+    config = provider_config(provider)
+    model, base = config["model"], config["base_url"].rstrip("/")
     if not model:
         raise HTTPException(422, "Save a model name first.")
     if provider != "paid":
@@ -248,6 +241,10 @@ async def check_model_connection():
                 raise HTTPException(422, "The configured model is not available at this endpoint.")
     except HTTPException:
         raise
+    except httpx.TimeoutException:
+        raise HTTPException(504, "The model connection timed out. Check that the service is running, then try again.") from None
+    except httpx.ConnectError:
+        raise HTTPException(502, "Could not reach the model endpoint. Check its URL and that the service is running.") from None
     except Exception:
         raise HTTPException(502, "Could not verify the model. Check the connection and try again.") from None
     return {"ok": True, "message": f"Model connected: {model}."}

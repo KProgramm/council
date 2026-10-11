@@ -1,4 +1,5 @@
 from contracts.schema import Message
+from agents.validation import REVIEWERS
 
 
 def check(transcript: list[Message]) -> str | None:
@@ -19,7 +20,9 @@ def check(transcript: list[Message]) -> str | None:
 
         positions = {message.position for message in latest_messages}
         if (
-            len(positions) == 1
+            set(latest_positions) == set(REVIEWERS)
+            and len(positions) == 1
+            and 'escalate' not in positions
             and all(
                 message.confidence is not None and message.confidence >= 0.7
                 for message in latest_messages

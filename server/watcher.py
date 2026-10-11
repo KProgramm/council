@@ -6,10 +6,12 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
-from contracts.schema import TradeoffMap
-from pydantic import BaseModel, Field
+from contracts.schema import Message
+from agents.validation import InvalidReviewResponse, validated_verdict
+from pydantic import BaseModel, Field, PositiveInt
 
 from integrations.github import (RepositoryInput, PullRequestInput, github_client,
                                  list_pull_requests, load_pull_request, parse_repository)
@@ -22,7 +24,7 @@ def completed_map(messages):
     if last.get('kind') != 'verdict' or last.get('agent') != 'system':
         return None
     try:
-        return TradeoffMap.model_validate_json(last['text']).model_dump()
+        return validated_verdict([Message.model_validate(item) for item in messages]).model_dump()
     except (ValueError, KeyError):
         return None
 
@@ -57,15 +59,33 @@ class RepositoryWatch:
         os.chmod(path, 0o600)
         self.db.executescript('''
             CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY, repository TEXT, enabled INTEGER);
-            INSERT OR IGNORE INTO config VALUES (1, '', 0);
+            INSERT OR IGNORE INTO config (id,repository,enabled) VALUES (1, '', 0);
             CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY, repository TEXT, url TEXT, revision TEXT,
                 source TEXT, status TEXT, error TEXT DEFAULT '', messages TEXT DEFAULT '[]',
                 created REAL, updated REAL, UNIQUE(url, revision)
             );
+            CREATE TABLE IF NOT EXISTS ignored_prs (
+                repository TEXT, number INTEGER, PRIMARY KEY(repository, number)
+            );
         ''')
+        # Existing watches keep their explicit automatic behavior after migration.
+        columns = {row['name'] for row in self.db.execute('PRAGMA table_info(config)')}
+        if 'mode' not in columns:
+            self.db.execute("ALTER TABLE config ADD COLUMN mode TEXT DEFAULT 'all'")
+            self.db.execute("ALTER TABLE config ADD COLUMN selected_prs TEXT DEFAULT '[]'")
         # A stopped process cannot have a live review; retry its unfinished revision.
         self.db.execute("UPDATE jobs SET status='queued', messages='[]' WHERE status='running'")
+        invalid_current = False
+        repository = self.config()['repository']
+        # Preserve earlier transcripts, but do not present invalid results as successes.
+        for row in self.db.execute("SELECT id,repository,messages FROM jobs WHERE status='completed'").fetchall():
+            if not completed_map(json.loads(row['messages'])):
+                self.db.execute("UPDATE jobs SET status='failed', error=? WHERE id=?",
+                                ('This earlier review contains invalid or incomplete AI output. Retry it with the updated council.', row['id']))
+                invalid_current |= row['repository'] == repository
+        if invalid_current:
+            self.db.execute('UPDATE config SET enabled=0 WHERE id=1')
         self.db.commit()
         self.runner = runner
         self.list_prs = list_prs or (lambda req: fetch_github(list_pull_requests, req))
@@ -73,20 +93,30 @@ class RepositoryWatch:
         self.poll_lock = asyncio.Lock()
         self.work_lock = asyncio.Lock()
         self.active = False
-        self.error = ''
+        self.error = 'Reviews paused: an earlier result failed validation. Retry the review with the updated council.' if invalid_current else ''
         self.last_checked = None
         self.next_check = 0
         self.wakeup = asyncio.Event()
         self.tasks = []
 
     def config(self):
-        return dict(self.db.execute('SELECT repository, enabled FROM config WHERE id=1').fetchone())
+        config = dict(self.db.execute('SELECT repository, enabled, mode, selected_prs FROM config WHERE id=1').fetchone())
+        config['selected_prs'] = json.loads(config['selected_prs'])
+        return config
+
+    def ignored(self, repository):
+        return {row['number'] for row in self.db.execute('SELECT number FROM ignored_prs WHERE repository=?', (repository,))}
+
+    def eligible(self, source):
+        config = self.config()
+        return (source['repository'] == config['repository'] and source['number'] not in self.ignored(source['repository'])
+                and (config['mode'] == 'all' or source['number'] in config['selected_prs']))
 
     def status(self):
         config = self.config()
         # Always include live work and recent results, even with a large backlog.
         pending = self.db.execute("SELECT * FROM jobs WHERE repository=? AND status IN ('running','queued') ORDER BY (status='running') DESC, created LIMIT 50", (config['repository'],)).fetchall()
-        recent = self.db.execute("SELECT * FROM jobs WHERE status NOT IN ('running','queued') ORDER BY updated DESC LIMIT 50").fetchall()
+        recent = self.db.execute("SELECT * FROM jobs WHERE repository=? AND status NOT IN ('running','queued') ORDER BY updated DESC LIMIT 50", (config['repository'],)).fetchall()
         rows = pending + recent
         counts = {row['status']: row['count'] for row in self.db.execute(
             "SELECT status, COUNT(*) AS count FROM jobs WHERE repository=? GROUP BY status", (config['repository'],))}
@@ -98,9 +128,12 @@ class RepositoryWatch:
             jobs.append({'id': row['id'], 'pull_request': source, 'status': row['status'],
                          'error': row['error'], 'outcome': verdict.get('outcome') if verdict else None})
         return {**config, 'enabled': bool(config['enabled']), 'active': self.active,
-                'error': self.error, 'last_checked': self.last_checked, 'counts': counts, 'jobs': jobs}
+                'error': self.error, 'last_checked': self.last_checked, 'counts': counts, 'jobs': jobs,
+                'ignored_prs': sorted(self.ignored(config['repository']))}
 
     def enqueue(self, source):
+        if not self.eligible(source):
+            return
         now = time.time()
         # A push replaces queued work, while an already running revision finishes honestly.
         self.db.execute("UPDATE jobs SET status='superseded', updated=? WHERE url=? AND revision!=? AND status='queued'",
@@ -111,16 +144,57 @@ class RepositoryWatch:
                         (source['url'], source['revision']))
         self.db.commit()
 
-    async def connect(self, repository):
+    async def connect(self, repository, mode='all', selected_prs=None):
         owner, repo = parse_repository(repository)
         repository = f'{owner}/{repo}'
         async with self.poll_lock:
             # Verify repository access before replacing the previous selection.
             data = await self.list_prs(RepositoryInput(repository=repository))
-            self.db.execute('UPDATE config SET repository=?, enabled=1 WHERE id=1', (repository,))
+            selected_prs = sorted(set(selected_prs or []))
+            if mode == 'selected':
+                if not selected_prs:
+                    raise HTTPException(422, 'Select at least one open, non-draft PR.')
+                available = {pr['number'] for pr in data['pull_requests'] if not pr['draft']}
+                if not set(selected_prs) <= available:
+                    raise HTTPException(409, 'Some selected PRs are no longer available. Load open PRs again.')
+                for number in selected_prs:
+                    self.db.execute('DELETE FROM ignored_prs WHERE repository=? AND number=?', (repository, number))
+            self.db.execute('UPDATE config SET repository=?, enabled=1, mode=?, selected_prs=? WHERE id=1',
+                            (repository, mode, json.dumps(selected_prs)))
+            # Changing the scope holds excluded work; an active review can finish.
+            for row in self.db.execute("SELECT id,source FROM jobs WHERE repository=? AND status='queued'", (repository,)).fetchall():
+                if not self.eligible(json.loads(row['source'])):
+                    self.update(row['id'], 'ignored', 'PR is outside the selected review scope.')
+            for row in self.db.execute("SELECT id,source FROM jobs WHERE repository=? AND status='ignored'", (repository,)).fetchall():
+                if self.eligible(json.loads(row['source'])):
+                    self.update(row['id'], 'queued')
             self.db.commit()
             self.ingest(data)
             self.next_check = time.time() + 120
+        self.wakeup.set()
+        return self.status()
+
+    def ignore(self, job_id):
+        source = self.detail(job_id)['pull_request']
+        self.db.execute('INSERT OR IGNORE INTO ignored_prs VALUES (?,?)', (source['repository'], source['number']))
+        self.db.execute("UPDATE jobs SET status='ignored', error='PR ignored. Future revisions will also be ignored.', updated=? WHERE url=? AND status IN ('queued','failed','skipped')",
+                        (time.time(), source['url']))
+        self.db.commit()
+        self.wakeup.set()
+        return self.status()
+
+    def include(self, job_id):
+        source = self.detail(job_id)['pull_request']
+        config = self.config()
+        if source['repository'] != config['repository']:
+            raise HTTPException(409, 'Load this review’s repository before including it.')
+        self.db.execute('DELETE FROM ignored_prs WHERE repository=? AND number=?', (source['repository'], source['number']))
+        if config['mode'] == 'selected':
+            self.db.execute('UPDATE config SET selected_prs=? WHERE id=1', (json.dumps(sorted(set(config['selected_prs'] + [source['number']]))),))
+        self.db.execute("UPDATE jobs SET status='queued', error='' WHERE url=? AND status='ignored'", (source['url'],))
+        self.db.commit()
+        # Refresh first so only the current revision enters the queue.
+        self.next_check = 0
         self.wakeup.set()
         return self.status()
 
@@ -180,8 +254,9 @@ class RepositoryWatch:
         row = self.db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
         if not row:
             raise HTTPException(404, 'Review not found.')
+        messages = json.loads(row['messages'])
         return {'id': row['id'], 'pull_request': json.loads(row['source']), 'status': row['status'],
-                'error': row['error'], 'messages': json.loads(row['messages'])}
+                'error': row['error'], 'messages': messages, 'valid_result': bool(completed_map(messages))}
 
     def retry(self, job_id):
         row = self.db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
@@ -189,6 +264,8 @@ class RepositoryWatch:
             raise HTTPException(409, 'Only failed or skipped reviews can be retried.')
         if row['repository'] != self.config()['repository']:
             raise HTTPException(409, 'Connect this review’s repository before retrying it.')
+        if not self.eligible(json.loads(row['source'])):
+            raise HTTPException(409, 'Include this PR in the review scope before retrying it.')
         self.db.execute("UPDATE jobs SET status='queued', error='', messages='[]' WHERE id=?", (job_id,))
         self.db.commit()
         self.wakeup.set()
@@ -210,6 +287,9 @@ class RepositoryWatch:
             try:
                 data = await self.load_pr(PullRequestInput(url=row['url']))
                 source = data['pull_request']
+                if not self.eligible(source):
+                    self.update(job_id, 'ignored', 'PR is outside the selected review scope.')
+                    return True
                 if source['state'] != 'open' or source.get('draft'):
                     self.update(job_id, 'skipped', 'PR is closed or a draft.')
                     return True
@@ -239,6 +319,10 @@ class RepositoryWatch:
                 if exc.status_code in {401, 403, 429}:
                     self.error = str(exc.detail)
                     self.pause()
+            except InvalidReviewResponse as exc:
+                self.update(job_id, 'failed', str(exc))
+                self.error = 'Reviews paused because the model returned invalid reviewer output. Check the model, then retry.'
+                self.pause()
             except Exception:
                 # Provider exception text can include keys/URLs; keep it out of stored errors.
                 self.update(job_id, 'failed', 'Council could not complete this review. Check the model connection, then retry.')
@@ -277,6 +361,8 @@ class RepositoryWatch:
 
 class WatchInput(BaseModel):
     repository: str = Field(min_length=1, max_length=2048)
+    mode: Literal['all', 'selected'] = 'selected'
+    selected_prs: list[PositiveInt] = Field(default_factory=list, max_length=1000)
 
 
 def create_watch_router(get_watch, check_model):
@@ -288,8 +374,10 @@ def create_watch_router(get_watch, check_model):
 
     @router.post('')
     async def connect(req: WatchInput):
+        if req.mode == 'selected' and not req.selected_prs:
+            raise HTTPException(422, 'Load open PRs and select the ones to review, or choose All open PRs.')
         await check_model()
-        return await get_watch().connect(req.repository)
+        return await get_watch().connect(req.repository, req.mode, req.selected_prs)
 
     @router.post('/pause')
     async def pause():
@@ -302,5 +390,13 @@ def create_watch_router(get_watch, check_model):
     @router.post('/reviews/{job_id}/retry')
     async def retry(job_id: str):
         return get_watch().retry(job_id)
+
+    @router.post('/reviews/{job_id}/ignore')
+    async def ignore(job_id: str):
+        return get_watch().ignore(job_id)
+
+    @router.post('/reviews/{job_id}/include')
+    async def include(job_id: str):
+        return get_watch().include(job_id)
 
     return router

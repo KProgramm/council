@@ -3,18 +3,13 @@ import asyncio
 from pathlib import Path
 
 from agents.base import ReviewAgent
+from agents.validation import REVIEWERS
 from council import convergence
 from council.tradeoff_map import build_map
 from contracts.bus import Bus
 from contracts.schema import AgentName, Message
 
-AGENT_NAMES: tuple[AgentName, ...] = (
-    "security",
-    "performance",
-    "compatibility",
-    "quality",
-    "product",
-)
+AGENT_NAMES: tuple[AgentName, ...] = REVIEWERS
 
 
 async def run_council(diff: str, bus: Bus, review_id: str) -> list[Message]:
@@ -40,9 +35,14 @@ async def run_council(diff: str, bus: Bus, review_id: str) -> list[Message]:
     final_round = 0
     for round_num in range(1, 4):
         final_round = round_num
-        responses = await asyncio.gather(
-            *(agent.speak(round_num) for agent in agents)
-        )
+        tasks = [asyncio.create_task(agent.speak(round_num)) for agent in agents]
+        try:
+            responses = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         for response in responses:
             if response is not None:
                 await bus.publish(response)
