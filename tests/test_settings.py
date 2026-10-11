@@ -27,6 +27,10 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             "LLM_API_KEY": "saved-test-llm-key"}, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
+        # Runtime environment loading must not import real local credentials into tests.
+        loader = patch('agents.base._load_environment')
+        loader.start()
+        self.addCleanup(loader.stop)
         self.active = False
 
     async def request(self, payload=None, *, host="localhost", client="127.0.0.1", headers=None):
@@ -185,3 +189,16 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
                 await check_model_connection()
             self.assertEqual(failure.exception.status_code, 401)
             self.assertNotIn('secret', str(failure.exception.detail))
+
+    async def test_provider_switch_preserves_separate_model_names(self):
+        from agents.base import _provider_settings
+        paid = {**PAYLOAD, 'provider': 'paid', 'model': 'paid/model', 'llm_api_key': 'paid-test-key'}
+        cisco = {**PAYLOAD, 'provider': 'cisco', 'model': 'lab/model', 'base_url': 'https://lab.example.com', 'llm_api_key': 'lab-test-key'}
+        self.assertEqual((await self.request(paid)).status_code, 200)
+        self.assertEqual((await self.request(cisco)).status_code, 200)
+        data = (await self.request()).json()
+        self.assertEqual(data['providers']['paid']['model'], 'paid/model')
+        self.assertEqual(data['providers']['cisco']['model'], 'lab/model')
+        self.assertEqual(_provider_settings()[0], 'litellm_proxy/lab/model')
+        self.assertEqual((await self.request({**paid, 'llm_api_key': None})).status_code, 200)
+        self.assertEqual(_provider_settings()[0], 'paid/model')

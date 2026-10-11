@@ -6,6 +6,7 @@ from pathlib import Path
 
 from contracts.bus import Bus
 from contracts.schema import AgentName, Message
+from agents.validation import InvalidReviewResponse, validate_assessment
 
 
 _semaphore: asyncio.Semaphore | None = None
@@ -30,27 +31,8 @@ def _get_semaphore() -> asyncio.Semaphore:
 
 def _provider_settings() -> tuple[str, dict]:
     _load_environment()
-    provider = os.getenv("LLM_PROVIDER", "brev").lower()
-    scoped_key = os.getenv({"brev": "BREV_API_KEY", "cisco": "CISCO_API_KEY", "paid": "PAID_API_KEY"}.get(provider, ""), os.getenv("LLM_API_KEY", "")).strip()
-    if provider == "brev":
-        model = f"ollama/{os.environ['OLLAMA_MODEL']}"
-        options = {"api_base": os.environ["OLLAMA_BASE_URL"]}
-        key = scoped_key
-        if key:
-            # Ollama completion requires explicit headers; chat also accepts api_key.
-            options.update(api_key=key, extra_headers={"Authorization": f"Bearer {key}"})
-    elif provider == "cisco":
-        model = f"litellm_proxy/{os.environ['LLM_MODEL']}"
-        options = {
-            "api_base": os.environ["LLM_BASE_URL"],
-            "api_key": scoped_key,
-        }
-    elif provider == "paid":
-        model = os.environ["LLM_MODEL"]
-        options = {"api_key": scoped_key}
-    else:
-        raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
-    return model, options
+    from integrations.model_config import runtime_settings
+    return runtime_settings()
 
 
 async def call_llm(system_prompt: str, user_content: str, use_cache: bool = True) -> str:
@@ -131,6 +113,7 @@ class ReviewAgent:
 
         prompt_path = Path(__file__).resolve().parents[1] / "prompts" / f"{self.name}.md"
         system_prompt = prompt_path.read_text(encoding="utf-8")
+        system_prompt += '\n\n' + (prompt_path.parent / 'review_protocol.md').read_text(encoding='utf-8')
         transcript_json = json.dumps(
             [msg.model_dump(mode="json") for msg in self.transcript],
             ensure_ascii=True,
@@ -142,18 +125,24 @@ class ReviewAgent:
             '{"pass": true} if you have nothing new.'
         )
 
+        validation_error = ''
         for attempt in range(2):
             try:
+                retry_content = user_content
+                if validation_error:
+                    retry_content += '\n\nCorrect your previous response: ' + validation_error
                 raw_response = await self._complete(
                     system_prompt,
-                    user_content,
+                    retry_content,
                     use_cache=(attempt == 0),
                 )
                 payload = json.loads(raw_response)
                 if isinstance(payload, dict) and payload.get("pass") is True:
+                    if round_num == 1:
+                        raise ValueError('Round 1 requires an independent assessment, including position and confidence.')
                     return None
                 if not isinstance(payload, dict):
-                    continue
+                    raise ValueError('Return a JSON object with all required reviewer fields.')
                 payload.pop("id", None)
                 payload.pop("ts", None)
                 payload.update(
@@ -161,7 +150,12 @@ class ReviewAgent:
                     agent=self.name,
                     round=round_num,
                 )
-                return Message.model_validate(payload)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                continue
-        return None
+                message = Message.model_validate(payload)
+                validate_assessment(message, self.transcript)
+                return message
+            except (json.JSONDecodeError, TypeError):
+                validation_error = 'Return a single valid JSON object with the required fields.'
+            except ValueError as error:
+                from pydantic import ValidationError
+                validation_error = 'Use the required Message fields and allowed values.' if isinstance(error, ValidationError) else str(error)
+        raise InvalidReviewResponse(f'The {self.name} reviewer returned invalid output twice. Try a different model or retry.')

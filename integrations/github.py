@@ -83,11 +83,11 @@ def check_response(response: httpx.Response) -> None:
     if status == 404:
         raise HTTPException(404, "Repository or PR not found or inaccessible. Check the URL and your access to private repositories.")
     if status == 401:
-        raise HTTPException(401, "GitHub rejected the configured token. Update the server's GitHub credentials.")
+        raise HTTPException(401, "GitHub rejected the saved token. In Connections, replace it or choose public access and save for public repositories.")
     if status == 429 or (status == 403 and response.headers.get("x-ratelimit-remaining") == "0"):
-        raise HTTPException(429, "GitHub's rate limit was reached. Try later, or configure a GitHub token on the server.")
+        raise HTTPException(429, "GitHub's rate limit was reached. Try later, or save a valid GitHub token in Connections for a higher limit.")
     if status == 403:
-        raise HTTPException(403, "GitHub denied access. The server's token needs read access to this repository's pull requests.")
+        raise HTTPException(403, "GitHub denied access. In Connections, use a token with read access to this repository's pull requests.")
     if status in {301, 302, 307, 308}:
         raise HTTPException(422, "This repository has moved. Open it on GitHub and copy its current URL.")
     raise HTTPException(502, "GitHub could not return the requested data. Try again shortly.")

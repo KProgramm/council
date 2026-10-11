@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 from contracts.schema import Claim, Message, TradeoffMap
 from council import convergence
 from council.tradeoff_map import build_map
+from agents.validation import REVIEWERS
 
 
 def message(
@@ -42,11 +43,22 @@ class ConvergenceTests(unittest.TestCase):
             message("security", 2, "approve", 0.8),
             message("performance", 2, "approve", 0.7),
         ]
+        transcript[2:2] = [message(name, 1, 'approve', 0.8) for name in REVIEWERS if name not in {'security', 'performance'}]
 
         self.assertEqual(convergence.check(transcript), "consensus")
 
         transcript[-1] = message("performance", 2, "approve", 0.69)
         self.assertIsNone(convergence.check(transcript))
+
+    def test_four_agreeing_reviewers_cannot_declare_consensus(self):
+        transcript = [message(name, 1, 'block', 0.9) for name in REVIEWERS[:-1]]
+        self.assertIsNone(convergence.check(transcript))
+        transcript.append(message('product', 2, None, 0.8))
+        self.assertIsNone(convergence.check(transcript))
+
+    def test_all_reviewers_requesting_human_decision_is_escalation(self):
+        transcript = [message(name, 3, 'escalate', 0.9) for name in REVIEWERS]
+        self.assertEqual(convergence.check(transcript), 'escalate')
 
     def test_critical_escalation_stops_debate(self) -> None:
         transcript = [
@@ -177,6 +189,14 @@ class TradeoffMapTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.final_positions["security"], "block")
         self.assertIn("security vs performance", result.unresolved[0])
         self.assertIn("review the transcript", result.human_decisions[0])
+
+    async def test_invalid_summary_cannot_be_reported_as_consensus(self):
+        transcript = [Message(review_id='test-review', round=0, agent='system', kind='diff', text='test diff')]
+        transcript += [message(name, 1, 'approve') for name in REVIEWERS]
+        with patch('council.tradeoff_map.call_llm', new=AsyncMock(return_value='not JSON')):
+            result = await build_map(transcript, 'consensus')
+        self.assertEqual(result.outcome, 'escalate')
+        self.assertTrue(result.human_decisions)
 
 
 if __name__ == "__main__":

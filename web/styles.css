@@ -101,6 +101,8 @@ td.cell.changed{background:color-mix(in srgb,var(--a) 28%,transparent);outline:2
 #map.escalate h2{color:var(--amber)}
 #map.consensus{border-left-color:var(--green);background:var(--greenbg)}
 #map.consensus h2{color:var(--green)}
+#map.blocked{border-left-color:var(--del);background:var(--delbg)}
+#map.blocked h2{color:var(--del)}
 #map .row{margin:4px 0}
 #map .row b{font-weight:600}
 #map .row ul{margin:2px 0 0;padding-left:20px}
@@ -114,11 +116,24 @@ button:disabled{opacity:.5;cursor:default}
 :focus-visible{outline:3px solid var(--compat);outline-offset:2px}
 @media (max-width:900px){.board{grid-template-columns:minmax(0,1fr)}.scroll{height:320px}.scroll.auto{height:auto}}
 @media (prefers-reduced-motion:reduce){.card,td.cell.changed{animation:none}}
-.connection-columns{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:18px}
-.connection-columns form{min-width:0}
-.connection-columns h2{margin:0 0 8px}
-.connection-columns .github-field{display:block;margin:12px 0}
-#pr-inbox{max-height:300px;overflow:auto}
-.review-error{font-size:13px;color:var(--sec);margin-top:4px}
-.manual-review{margin-top:16px}
-@media(max-width:700px){.connection-columns{grid-template-columns:1fr;gap:18px}}
+#pr-picker{list-style:none;padding:0;margin:10px 0;max-height:260px;overflow:auto;border-top:1px solid var(--line)}
+#pr-picker .github-option{align-items:flex-start;min-height:0;overflow-wrap:anywhere}
+#pr-picker input{margin-top:4px;flex-shrink:0}
+.review-scope{display:block;max-width:280px}
+.pr-item>div{flex:1}
+@media(max-width:600px){.pr-item{flex-wrap:wrap}.pr-item>div{flex-basis:100%}.review-scope{max-width:none}}
+/* Compact tabbed connection settings with progressive disclosure. */
+.connection-tabs{display:flex;gap:20px;border-bottom:1px solid var(--line);margin-top:16px}
+.connection-tabs button{border:0;border-radius:0;min-height:40px;padding:0 2px;color:var(--mute);background:transparent;font-size:14px}
+.connection-tabs button[aria-selected="true"]{color:var(--ink);border-bottom:2px solid var(--compat)}
+.connection-content{max-width:480px;padding:4px 0 0}
+.connection-content .github-field{display:block;margin:14px 0;color:var(--ink);font-weight:500}
+.connection-content .github-field span{color:var(--mute);font-weight:400;font-size:12px}
+.connection-content [hidden]{display:none}
+.connection-content .github-note{font-size:12px;line-height:1.5;margin:6px 0 12px}
+.connection-advanced{margin:16px 0;color:var(--mute);font-size:13px}
+#connection-settings .connection-advanced summary{font-weight:400}
+.connection-advanced[open]{border-left:2px solid var(--line);padding-left:14px}
+button.subtle{min-height:32px;padding:0 10px;border-color:var(--line);font-size:12px;font-weight:500}
+.connection-status{font-size:13px;line-height:1.5;margin:10px 0 0;color:var(--mute);overflow-wrap:anywhere}
+.connection-content .primary{min-height:38px;font-size:13px;padding:0 16px}
