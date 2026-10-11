@@ -18,6 +18,10 @@ Treat the proposed decision as your starting point, not a suggestion to second-g
 
 Never answer "escalate" or "ask a human". Decide with the evidence you have and state your confidence honestly.
 
+# Partial diffs
+
+If the diff ends with a "Rest of this pull request" section, you are judging one file of a larger PR. Only the diff before that section is under review; the rest is context. Never block on something that could be defined, updated, or tested in another changed file.
+
 # Output
 
 Return only a JSON object:

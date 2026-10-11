@@ -1,0 +1,411 @@
+diff --git a/CHANGES/3945.deprecation.rst b/CHANGES/3945.deprecation.rst
+new file mode 100644
+index 00000000000..07f8566881a
+--- /dev/null
++++ b/CHANGES/3945.deprecation.rst
+@@ -0,0 +1 @@
++Deprecate obsolete `timeout: float` and `receive_timeout: Optional[float]` in `ClientSession.ws_connect()`. Change default websocket receive timeout from `None` to `10.0`.
+diff --git a/CHANGES/8612.feature.rst b/CHANGES/8612.feature.rst
+new file mode 100644
+index 00000000000..96adcf6dc4c
+--- /dev/null
++++ b/CHANGES/8612.feature.rst
+@@ -0,0 +1 @@
++Exported ``ClientWSTimeout`` to top-level namespace -- by :user:`Dreamsorcerer`.
+diff --git a/aiohttp/__init__.py b/aiohttp/__init__.py
+index 79f40d6f8f3..aa88e1d2623 100644
+--- a/aiohttp/__init__.py
++++ b/aiohttp/__init__.py
+@@ -21,6 +21,7 @@
+     ClientSSLError,
+     ClientTimeout,
+     ClientWebSocketResponse,
++    ClientWSTimeout,
+     ConnectionTimeoutError,
+     ContentTypeError,
+     Fingerprint,
+@@ -138,6 +139,7 @@
+     "ClientSession",
+     "ClientTimeout",
+     "ClientWebSocketResponse",
++    "ClientWSTimeout",
+     "ConnectionTimeoutError",
+     "ContentTypeError",
+     "Fingerprint",
+diff --git a/aiohttp/client.py b/aiohttp/client.py
+index 8edd14d01ff..f9e3a5c5f65 100644
+--- a/aiohttp/client.py
++++ b/aiohttp/client.py
+@@ -73,7 +73,11 @@
+     RequestInfo as RequestInfo,
+     _merge_ssl_params,
+ )
+-from .client_ws import ClientWebSocketResponse as ClientWebSocketResponse
++from .client_ws import (
++    DEFAULT_WS_CLIENT_TIMEOUT,
++    ClientWebSocketResponse as ClientWebSocketResponse,
++    ClientWSTimeout as ClientWSTimeout,
++)
+ from .connector import (
+     HTTP_AND_EMPTY_SCHEMA_SET,
+     BaseConnector as BaseConnector,
+@@ -142,6 +146,7 @@
+     # client
+     "ClientSession",
+     "ClientTimeout",
++    "ClientWSTimeout",
+     "request",
+ )
+ 
+@@ -820,7 +825,7 @@ def ws_connect(
+         *,
+         method: str = hdrs.METH_GET,
+         protocols: Iterable[str] = (),
+-        timeout: float = 10.0,
++        timeout: Union[ClientWSTimeout, _SENTINEL] = sentinel,
+         receive_timeout: Optional[float] = None,
+         autoclose: bool = True,
+         autoping: bool = True,
+@@ -872,7 +877,7 @@ async def _ws_connect(
+         *,
+         method: str = hdrs.METH_GET,
+         protocols: Iterable[str] = (),
+-        timeout: float = 10.0,
++        timeout: Union[ClientWSTimeout, _SENTINEL] = sentinel,
+         receive_timeout: Optional[float] = None,
+         autoclose: bool = True,
+         autoping: bool = True,
+@@ -891,6 +896,29 @@ async def _ws_connect(
+         compress: int = 0,
+         max_msg_size: int = 4 * 1024 * 1024,
+     ) -> ClientWebSocketResponse:
++        if timeout is not sentinel:
++            if isinstance(timeout, ClientWSTimeout):
++                ws_timeout = timeout
++            else:
++                warnings.warn(
++                    "parameter 'timeout' of type 'float' "
++                    "is deprecated, please use "
++                    "'timeout=ClientWSTimeout(ws_close=...)'",
++                    DeprecationWarning,
++                    stacklevel=2,
++                )
++                ws_timeout = ClientWSTimeout(ws_close=timeout)
++        else:
++            ws_timeout = DEFAULT_WS_CLIENT_TIMEOUT
++        if receive_timeout is not None:
++            warnings.warn(
++                "float parameter 'receive_timeout' "
++                "is deprecated, please use parameter "
++                "'timeout=ClientWSTimeout(ws_receive=...)'",
++                DeprecationWarning,
++                stacklevel=2,
++            )
++            ws_timeout = attr.evolve(ws_timeout, ws_receive=receive_timeout)
+ 
+         if headers is None:
+             real_headers: CIMultiDict[str] = CIMultiDict()
+@@ -1021,12 +1049,13 @@ async def _ws_connect(
+ 
+             # For WS connection the read_timeout must be either receive_timeout or greater
+             # None == no timeout, i.e. infinite timeout, so None is the max timeout possible
+-            if receive_timeout is None:
++            if ws_timeout.ws_receive is None:
+                 # Reset regardless
+-                conn_proto.read_timeout = receive_timeout
++                conn_proto.read_timeout = None
+             elif conn_proto.read_timeout is not None:
+-                # If read_timeout was set check which wins
+-                conn_proto.read_timeout = max(receive_timeout, conn_proto.read_timeout)
++                conn_proto.read_timeout = max(
++                    ws_timeout.ws_receive, conn_proto.read_timeout
++                )
+ 
+             transport = conn.transport
+             assert transport is not None
+@@ -1050,11 +1079,10 @@ async def _ws_connect(
+                 writer,
+                 protocol,
+                 resp,
+-                timeout,
++                ws_timeout,
+                 autoclose,
+                 autoping,
+                 self._loop,
+-                receive_timeout=receive_timeout,
+                 heartbeat=heartbeat,
+                 compress=compress,
+                 client_notakeover=notakeover,
+diff --git a/aiohttp/client_ws.py b/aiohttp/client_ws.py
+index 7b3a5bf952d..6246234b8e0 100644
+--- a/aiohttp/client_ws.py
++++ b/aiohttp/client_ws.py
+@@ -4,6 +4,8 @@
+ import sys
+ from typing import Any, Optional, cast
+ 
++import attr
++
+ from .client_exceptions import ClientError, ServerTimeoutError
+ from .client_reqrep import ClientResponse
+ from .helpers import calculate_timeout_when, set_result
+@@ -30,6 +32,15 @@
+     import async_timeout
+ 
+ 
++@attr.s(frozen=True, slots=True)
++class ClientWSTimeout:
++    ws_receive = attr.ib(type=Optional[float], default=None)
++    ws_close = attr.ib(type=Optional[float], default=None)
++
++
++DEFAULT_WS_CLIENT_TIMEOUT = ClientWSTimeout(ws_receive=None, ws_close=10.0)
++
++
+ class ClientWebSocketResponse:
+     def __init__(
+         self,
+@@ -37,12 +48,11 @@ def __init__(
+         writer: WebSocketWriter,
+         protocol: Optional[str],
+         response: ClientResponse,
+-        timeout: float,
++        timeout: ClientWSTimeout,
+         autoclose: bool,
+         autoping: bool,
+         loop: asyncio.AbstractEventLoop,
+         *,
+-        receive_timeout: Optional[float] = None,
+         heartbeat: Optional[float] = None,
+         compress: int = 0,
+         client_notakeover: bool = False,
+@@ -57,7 +67,6 @@ def __init__(
+         self._closing = False
+         self._close_code: Optional[int] = None
+         self._timeout = timeout
+-        self._receive_timeout = receive_timeout
+         self._autoclose = autoclose
+         self._autoping = autoping
+         self._heartbeat = heartbeat
+@@ -268,7 +277,7 @@ async def close(self, *, code: int = WSCloseCode.OK, message: bytes = b"") -> bo
+ 
+             while True:
+                 try:
+-                    async with async_timeout.timeout(self._timeout):
++                    async with async_timeout.timeout(self._timeout.ws_close):
+                         msg = await self._reader.read()
+                 except asyncio.CancelledError:
+                     self._close_code = WSCloseCode.ABNORMAL_CLOSURE
+@@ -288,7 +297,7 @@ async def close(self, *, code: int = WSCloseCode.OK, message: bytes = b"") -> bo
+             return False
+ 
+     async def receive(self, timeout: Optional[float] = None) -> WSMessage:
+-        receive_timeout = timeout or self._receive_timeout
++        receive_timeout = timeout or self._timeout.ws_receive
+ 
+         while True:
+             if self._waiting:
+diff --git a/docs/client_reference.rst b/docs/client_reference.rst
+index 4e63552cd5c..f64df336755 100644
+--- a/docs/client_reference.rst
++++ b/docs/client_reference.rst
+@@ -690,8 +690,8 @@ The client session supports the context manager protocol for self closing.
+                               <ClientResponse>` object.
+ 
+    .. method:: ws_connect(url, *, method='GET', \
+-                            protocols=(), timeout=10.0,\
+-                            receive_timeout=None,\
++                            protocols=(), \
++                            timeout=sentinel,\
+                             auth=None,\
+                             autoclose=True,\
+                             autoping=True,\
+@@ -714,12 +714,11 @@ The client session supports the context manager protocol for self closing.
+ 
+       :param tuple protocols: Websocket protocols
+ 
+-      :param float timeout: Timeout for websocket to close. ``10`` seconds
+-                            by default
+-
+-      :param float receive_timeout: Timeout for websocket to receive
+-                                    complete message.  ``None`` (unlimited)
+-                                    seconds by default
++      :param timeout: a :class:`ClientWSTimeout` timeout for websocket.
++                      By default, the value
++                      `ClientWSTimeout(ws_receive=None, ws_close=10.0)` is used
++                      (``10.0`` seconds for the websocket to close).
++                      ``None`` means no timeout will be used.
+ 
+       :param aiohttp.BasicAuth auth: an object that represents HTTP
+                                      Basic Authorization (optional)
+@@ -1760,7 +1759,24 @@ Utilities
+ 
+       :class:`float`, ``None`` by default.
+ 
+-   .. versionadded:: 3.3
++
++.. class:: ClientWSTimeout(*, ws_receive=None, ws_close=None)
++
++   A data class for websocket client timeout settings.
++
++   .. attribute:: ws_receive
++
++      A timeout for websocket to receive a complete message.
++
++      :class:`float`, ``None`` by default.
++
++   .. attribute:: ws_close
++
++      A timeout for the websocket to close.
++
++      :class:`float`, ``10.0`` by default.
++
++   .. versionadded:: 4.0
+ 
+ 
+    .. note::
+diff --git a/tests/test_client_ws.py b/tests/test_client_ws.py
+index a790fba43ec..31ec7576c97 100644
+--- a/tests/test_client_ws.py
++++ b/tests/test_client_ws.py
+@@ -91,7 +91,7 @@ async def test_ws_connect_read_timeout_stays_inf(
+         res = await aiohttp.ClientSession().ws_connect(
+             "http://test.org",
+             protocols=("t1", "t2", "chat"),
+-            receive_timeout=0.5,
++            timeout=aiohttp.ClientWSTimeout(0.5),
+         )
+ 
+     assert isinstance(res, client.ClientWebSocketResponse)
+@@ -122,7 +122,7 @@ async def test_ws_connect_read_timeout_reset_to_max(
+         res = await aiohttp.ClientSession().ws_connect(
+             "http://test.org",
+             protocols=("t1", "t2", "chat"),
+-            receive_timeout=1.0,
++            timeout=aiohttp.ClientWSTimeout(1.0),
+         )
+ 
+     assert isinstance(res, client.ClientWebSocketResponse)
+@@ -600,8 +600,9 @@ async def test_reader_read_exception(ws_key, key_data, loop) -> None:
+ 
+ 
+ async def test_receive_runtime_err(loop) -> None:
++    timeout = aiohttp.ClientWSTimeout(ws_receive=10.0)
+     resp = client.ClientWebSocketResponse(
+-        mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock(), 10.0, True, True, loop
++        mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock(), timeout, True, True, loop
+     )
+     resp._waiting = True
+ 
+diff --git a/tests/test_client_ws_functional.py b/tests/test_client_ws_functional.py
+index 274092a189a..30da0dca802 100644
+--- a/tests/test_client_ws_functional.py
++++ b/tests/test_client_ws_functional.py
+@@ -7,6 +7,7 @@
+ 
+ import aiohttp
+ from aiohttp import ServerTimeoutError, WSMsgType, hdrs, web
++from aiohttp.client_ws import ClientWSTimeout
+ from aiohttp.http import WSCloseCode
+ from aiohttp.pytest_plugin import AiohttpClient
+ 
+@@ -394,7 +395,7 @@ async def handler(request):
+     assert resp.closed
+ 
+ 
+-async def test_close_timeout(aiohttp_client) -> None:
++async def test_close_timeout_sock_close_read(aiohttp_client) -> None:
+     async def handler(request):
+         ws = web.WebSocketResponse()
+         await ws.prepare(request)
+@@ -406,7 +407,39 @@ async def handler(request):
+     app = web.Application()
+     app.router.add_route("GET", "/", handler)
+     client = await aiohttp_client(app)
+-    resp = await client.ws_connect("/", timeout=0.2, autoclose=False)
++    timeout = ClientWSTimeout(ws_close=0.2)
++    resp = await client.ws_connect("/", timeout=timeout, autoclose=False)
++
++    await resp.send_bytes(b"ask")
++
++    msg = await resp.receive()
++    assert msg.data == "test"
++    assert msg.type == aiohttp.WSMsgType.TEXT
++
++    msg = await resp.close()
++    assert resp.closed
++    assert isinstance(resp.exception(), asyncio.TimeoutError)
++
++
++async def test_close_timeout_deprecated(aiohttp_client) -> None:
++    async def handler(request):
++        ws = web.WebSocketResponse()
++        await ws.prepare(request)
++        await ws.receive_bytes()
++        await ws.send_str("test")
++        await asyncio.sleep(1)
++        return ws
++
++    app = web.Application()
++    app.router.add_route("GET", "/", handler)
++    client = await aiohttp_client(app)
++    with pytest.warns(
++        DeprecationWarning,
++        match="parameter 'timeout' of type 'float' "
++        "is deprecated, please use "
++        r"'timeout=ClientWSTimeout\(ws_close=...\)'",
++    ):
++        resp = await client.ws_connect("/", timeout=0.2, autoclose=False)
+ 
+     await resp.send_bytes(b"ask")
+ 
+@@ -535,7 +568,7 @@ async def handler(request):
+     await resp.close()
+ 
+ 
+-async def test_receive_timeout(aiohttp_client) -> None:
++async def test_receive_timeout_sock_read(aiohttp_client) -> None:
+     async def handler(request):
+         ws = web.WebSocketResponse()
+         await ws.prepare(request)
+@@ -547,10 +580,38 @@ async def handler(request):
+     app.router.add_route("GET", "/", handler)
+ 
+     client = await aiohttp_client(app)
+-    resp = await client.ws_connect("/", receive_timeout=0.1)
++    receive_timeout = ClientWSTimeout(ws_receive=0.1)
++    resp = await client.ws_connect("/", timeout=receive_timeout)
+ 
+     with pytest.raises(asyncio.TimeoutError):
+-        await resp.receive(0.05)
++        await resp.receive(timeout=0.05)
++
++    await resp.close()
++
++
++async def test_receive_timeout_deprecation(aiohttp_client) -> None:
++
++    async def handler(request):
++        ws = web.WebSocketResponse()
++        await ws.prepare(request)
++        await ws.receive()
++        await ws.close()
++        return ws
++
++    app = web.Application()
++    app.router.add_route("GET", "/", handler)
++
++    client = await aiohttp_client(app)
++    with pytest.warns(
++        DeprecationWarning,
++        match="float parameter 'receive_timeout' "
++        "is deprecated, please use parameter "
++        r"'timeout=ClientWSTimeout\(ws_receive=...\)'",
++    ):
++        resp = await client.ws_connect("/", receive_timeout=0.1)
++
++    with pytest.raises(asyncio.TimeoutError):
++        await resp.receive(timeout=0.05)
+ 
+     await resp.close()
+ 

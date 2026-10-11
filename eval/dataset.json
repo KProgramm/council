@@ -4,6 +4,17 @@
     "pr_url": "https://github.com/psf/requests/pull/6667",
     "ground_truth": "Reverted because caching a default SSLContext introduced edge cases and concurrency issues that outweighed the performance benefit.",
     "label": "bad",
+    "chars": 3254,
+    "risk": {
+      "security": 0.713,
+      "concurrency": 0.0,
+      "compatibility": 0.165,
+      "performance": 0.0,
+      "size": 0.109,
+      "untested": 0.5,
+      "spread": 0.118,
+      "overall": 0.251
+    },
     "split": "dev"
   },
   {
@@ -11,6 +22,17 @@
     "pr_url": "https://github.com/axios/axios/pull/3785",
     "ground_truth": "Reverted for standard browsers because retaining the Content-Type header for FormData payloads broke browser FormData support.",
     "label": "bad",
+    "chars": 498,
+    "risk": {
+      "security": 0.0,
+      "concurrency": 0.0,
+      "compatibility": 0.039,
+      "performance": 0.0,
+      "size": 0.01,
+      "untested": 0.5,
+      "spread": 0.118,
+      "overall": 0.07
+    },
     "split": "dev"
   },
   {
@@ -18,97 +40,431 @@
     "pr_url": "https://github.com/fastapi/fastapi/pull/13314",
     "ground_truth": "Reverted because the annotation change broke Annotated custom validations such as AfterValidator, a use case missing documentation and tests.",
     "label": "bad",
+    "chars": 2259,
+    "risk": {
+      "security": 0.0,
+      "concurrency": 0.0,
+      "compatibility": 0.244,
+      "performance": 0.064,
+      "size": 0.072,
+      "untested": 0.0,
+      "spread": 0.221,
+      "overall": 0.08
+    },
     "split": "dev"
-  },
-  {
-    "file": "fixtures/diffs/django-14709.diff",
-    "pr_url": "https://github.com/django/django/pull/14709",
-    "ground_truth": "Reverted because shallow-copying WhereNode children allowed reused querysets evaluated in nested nodes to mutate JOIN aliases.",
-    "label": "bad",
-    "split": "dev"
-  },
-  {
-    "file": "fixtures/diffs/django-17969.diff",
-    "pr_url": "https://github.com/django/django/pull/17969",
-    "ground_truth": "Reverted because using multi-row INSERT statements on Oracle caused crashes with Oracle versions greater than 23.3.",
-    "label": "bad",
-    "split": "test"
-  },
-  {
-    "file": "fixtures/diffs/django-18316.diff",
-    "pr_url": "https://github.com/django/django/pull/18316",
-    "ground_truth": "Reverted because the subclass-identification refactor caused a performance regression.",
-    "label": "bad",
-    "split": "test"
-  },
-  {
-    "file": "fixtures/diffs/django-16248.diff",
-    "pr_url": "https://github.com/django/django/pull/16248",
-    "ground_truth": "Reverted because the admin sidebar change caused a visual regression when both navigation and filter sidebars were visible.",
-    "label": "bad",
-    "split": "test"
   },
   {
     "file": "fixtures/diffs/requests-3713.diff",
     "pr_url": "https://github.com/psf/requests/pull/3713",
     "ground_truth": "Reverted because restricting URL preparation to HTTP and HTTPS broke docker-py, while other IDNA workarounds were considered sufficient.",
     "label": "bad",
+    "chars": 1697,
+    "risk": {
+      "security": 0.08,
+      "concurrency": 0.0,
+      "compatibility": 0.139,
+      "performance": 0.0,
+      "size": 0.056,
+      "untested": 0.0,
+      "spread": 0.221,
+      "overall": 0.07
+    },
     "split": "test"
   },
   {
-    "file": "fixtures/diffs/fastapi-14458.diff",
-    "pr_url": "https://github.com/fastapi/fastapi/pull/14458",
-    "ground_truth": "No defect. Merged and never reverted: Fix using a class (not instance) dependency that has a __call__ method. A correct review approves it, at most with minor changes.",
-    "label": "good",
+    "file": "fixtures/diffs/aiohttp-3492.diff",
+    "pr_url": "https://github.com/aio-libs/aiohttp/pull/3492",
+    "ground_truth": "Reverted because accepting bare-LF multipart line endings risked HTTP request smuggling vulnerabilities.",
+    "label": "bad",
+    "chars": 42518,
+    "risk": {
+      "security": 0.283,
+      "concurrency": 0.986,
+      "compatibility": 0.987,
+      "performance": 0.33,
+      "size": 0.797,
+      "untested": 0.0,
+      "spread": 0.313,
+      "overall": 0.576
+    },
     "split": "dev"
   },
   {
-    "file": "fixtures/diffs/axios-7206.diff",
-    "pr_url": "https://github.com/axios/axios/pull/7206",
-    "ground_truth": "No defect. Merged and never reverted: Fix 'socket hang up' for keep-alive requests when using timeouts. A correct review approves it, at most with minor changes.",
-    "label": "good",
+    "file": "fixtures/diffs/redis-10969.diff",
+    "pr_url": "https://github.com/redis/redis/pull/10969",
+    "ground_truth": "Reverted because a lazy expire during a command put the DEL into the replication stream after the command placeholder, giving replicas a different order than the primary.",
+    "label": "bad",
+    "chars": 46778,
+    "risk": {
+      "security": 0.0,
+      "concurrency": 0.0,
+      "compatibility": 0.736,
+      "performance": 0.873,
+      "size": 0.713,
+      "untested": 0.0,
+      "spread": 0.847,
+      "overall": 0.425
+    },
     "split": "dev"
   },
   {
-    "file": "fixtures/diffs/requests-6963.diff",
-    "pr_url": "https://github.com/psf/requests/pull/6963",
-    "ground_truth": "No defect. Merged and never reverted: Fix CVE-2024-47081: manual URL parsing leaked netloc credentials. A correct review approves it, at most with minor changes.",
-    "label": "good",
+    "file": "fixtures/diffs/prometheus-16730.diff",
+    "pr_url": "https://github.com/prometheus/prometheus/pull/16730",
+    "ground_truth": "Reverted because adding OTLP scope name/version/schema_url as metric labels could collide with the reserved otel_scope_* labels.",
+    "label": "bad",
+    "chars": 58183,
+    "risk": {
+      "security": 0.154,
+      "concurrency": 0.0,
+      "compatibility": 0.948,
+      "performance": 0.0,
+      "size": 0.901,
+      "untested": 0.0,
+      "spread": 0.803,
+      "overall": 0.433
+    },
+    "split": "test"
+  },
+  {
+    "file": "fixtures/diffs/pytest-11721.diff",
+    "pr_url": "https://github.com/pytest-dev/pytest/pull/11721",
+    "ground_truth": "Reverted because session fixture teardown ran multiple times under pytest-xdist, which special-cases --maxfail.",
+    "label": "bad",
+    "chars": 7437,
+    "risk": {
+      "security": 0.08,
+      "concurrency": 0.0,
+      "compatibility": 0.56,
+      "performance": 0.0,
+      "size": 0.326,
+      "untested": 0.0,
+      "spread": 0.528,
+      "overall": 0.218
+    },
     "split": "dev"
   },
   {
-    "file": "fixtures/diffs/flask-5797.diff",
-    "pr_url": "https://github.com/pallets/flask/pull/5797",
-    "ground_truth": "No defect. Merged and never reverted: Push preserved contexts in the correct order. A correct review approves it, at most with minor changes.",
-    "label": "good",
+    "file": "fixtures/diffs/kubernetes-136796.diff",
+    "pr_url": "https://github.com/kubernetes/kubernetes/pull/136796",
+    "ground_truth": "Reverted because the nftables fix made nft.List() parse far more JSON, which broke kube-proxy on 5000-node clusters.",
+    "label": "bad",
+    "chars": 90676,
+    "risk": {
+      "security": 0.918,
+      "concurrency": 0.853,
+      "compatibility": 0.907,
+      "performance": 0.896,
+      "size": 0.976,
+      "untested": 1.0,
+      "spread": 0.777,
+      "overall": 0.91
+    },
+    "split": "test"
+  },
+  {
+    "file": "fixtures/diffs/nextjs-97821.diff",
+    "pr_url": "https://github.com/vercel/next.js/pull/97821",
+    "ground_truth": "Reverted because stamping the collected cache lifetime onto entries seeded from fallback files broke separate static app shells for different root params.",
+    "label": "bad",
+    "chars": 11294,
+    "risk": {
+      "security": 0.283,
+      "concurrency": 0.99,
+      "compatibility": 0.229,
+      "performance": 0.064,
+      "size": 0.38,
+      "untested": 0.0,
+      "spread": 0.465,
+      "overall": 0.368
+    },
+    "split": "test"
+  },
+  {
+    "file": "fixtures/diffs/nextjs-95682.diff",
+    "pr_url": "https://github.com/vercel/next.js/pull/95682",
+    "ground_truth": "Reverted because replaying same-document traversals before hydration broke the PPR code path, which behaves differently.",
+    "label": "bad",
+    "chars": 20711,
+    "risk": {
+      "security": 0.565,
+      "concurrency": 1.0,
+      "compatibility": 0.362,
+      "performance": 0.181,
+      "size": 0.714,
+      "untested": 0.0,
+      "spread": 0.583,
+      "overall": 0.537
+    },
     "split": "dev"
   },
   {
-    "file": "fixtures/diffs/fastapi-14430.diff",
-    "pr_url": "https://github.com/fastapi/fastapi/pull/14430",
-    "ground_truth": "No defect. Merged and never reverted: Fix optional sequence handling with the Python 3.10 union syntax. A correct review approves it, at most with minor changes.",
-    "label": "good",
+    "file": "fixtures/diffs/pandas-64639.diff",
+    "pr_url": "https://github.com/pandas-dev/pandas/pull/64639",
+    "ground_truth": "Reverted because distinguishing bool from int in the object-dtype hash table changed lookup behavior and caused regressions.",
+    "label": "bad",
+    "chars": 11980,
+    "risk": {
+      "security": 0.0,
+      "concurrency": 0.0,
+      "compatibility": 0.473,
+      "performance": 0.0,
+      "size": 0.348,
+      "untested": 0.0,
+      "spread": 0.583,
+      "overall": 0.199
+    },
     "split": "test"
   },
   {
-    "file": "fixtures/diffs/fastapi-14372.diff",
-    "pr_url": "https://github.com/fastapi/fastapi/pull/14372",
-    "ground_truth": "No defect. Merged and never reverted: Make the result of Depends() and Security() hashable. A correct review approves it, at most with minor changes.",
-    "label": "good",
+    "file": "fixtures/diffs/pandas-64798.diff",
+    "pr_url": "https://github.com/pandas-dev/pandas/pull/64798",
+    "ground_truth": "Reverted because rejecting unhashable elements in the Index constructor changed behavior users relied on.",
+    "label": "bad",
+    "chars": 13376,
+    "risk": {
+      "security": 0.0,
+      "concurrency": 0.0,
+      "compatibility": 0.446,
+      "performance": 0.234,
+      "size": 0.33,
+      "untested": 0.0,
+      "spread": 0.826,
+      "overall": 0.239
+    },
     "split": "test"
   },
   {
-    "file": "fixtures/diffs/axios-7193.diff",
-    "pr_url": "https://github.com/axios/axios/pull/7193",
-    "ground_truth": "No defect. Merged and never reverted: Fix a regression that interrupted the data stream for non-OK HTTP statuses. A correct review approves it, at most with minor changes.",
-    "label": "good",
+    "file": "fixtures/diffs/httpx-369.diff",
+    "pr_url": "https://github.com/encode/httpx/pull/369",
+    "ground_truth": "Reverted because it used asyncio.Stream, which does not exist in the released Python 3.8, so tests failed.",
+    "label": "bad",
+    "chars": 11515,
+    "risk": {
+      "security": 0.757,
+      "concurrency": 0.84,
+      "compatibility": 0.817,
+      "performance": 0.33,
+      "size": 0.413,
+      "untested": 0.0,
+      "spread": 0.393,
+      "overall": 0.555
+    },
     "split": "test"
   },
   {
-    "file": "fixtures/diffs/axios-6961.diff",
-    "pr_url": "https://github.com/axios/axios/pull/6961",
-    "ground_truth": "No defect. Merged and never reverted: Prevent RangeError when using large Buffers in requests. A correct review approves it, at most with minor changes.",
+    "file": "fixtures/diffs/redis-13326.diff",
+    "pr_url": "https://github.com/redis/redis/pull/13326",
+    "ground_truth": "No defect found in review. Merged and not reverted: HFE: avoid lazy expire when called by modules. A correct review approves it, at most with minor changes.",
     "label": "good",
+    "chars": 51169,
+    "risk": {
+      "security": 0.0,
+      "concurrency": 0.221,
+      "compatibility": 0.975,
+      "performance": 0.33,
+      "size": 0.834,
+      "untested": 0.0,
+      "spread": 0.583,
+      "overall": 0.438
+    },
+    "split": "dev"
+  },
+  {
+    "file": "fixtures/diffs/pydantic-10181.diff",
+    "pr_url": "https://github.com/pydantic/pydantic/pull/10181",
+    "ground_truth": "No defect found in review. Merged and not reverted: Deprecate passing a dict to the Examples class. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "chars": 14074,
+    "risk": {
+      "security": 0.154,
+      "concurrency": 0.0,
+      "compatibility": 0.882,
+      "performance": 0.811,
+      "size": 0.381,
+      "untested": 0.0,
+      "spread": 0.675,
+      "overall": 0.388
+    },
     "split": "test"
+  },
+  {
+    "file": "fixtures/diffs/httpx-3045.diff",
+    "pr_url": "https://github.com/encode/httpx/pull/3045",
+    "ground_truth": "No defect found in review. Merged and not reverted: Fix RFC 2069 mode digest authentication. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "chars": 8364,
+    "risk": {
+      "security": 0.996,
+      "concurrency": 0.0,
+      "compatibility": 0.205,
+      "performance": 0.0,
+      "size": 0.351,
+      "untested": 0.0,
+      "spread": 0.313,
+      "overall": 0.331
+    },
+    "split": "test"
+  },
+  {
+    "file": "fixtures/diffs/aiohttp-8965.diff",
+    "pr_url": "https://github.com/aio-libs/aiohttp/pull/8965",
+    "ground_truth": "No defect found in review. Merged and not reverted: Deprecate obsolete timeout in ClientSession.ws_connect(). A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "chars": 14631,
+    "risk": {
+      "security": 0.0,
+      "concurrency": 0.885,
+      "compatibility": 0.657,
+      "performance": 0.064,
+      "size": 0.364,
+      "untested": 0.0,
+      "spread": 0.632,
+      "overall": 0.374
+    },
+    "split": "dev"
+  },
+  {
+    "file": "fixtures/diffs/next.js-69507.diff",
+    "pr_url": "https://github.com/vercel/next.js/pull/69507",
+    "ground_truth": "No defect found in review. Merged and not reverted: Backport: fix missing stylesheets with parallel routes. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "chars": 20083,
+    "risk": {
+      "security": 0.341,
+      "concurrency": 0.875,
+      "compatibility": 0.758,
+      "performance": 0.125,
+      "size": 0.555,
+      "untested": 0.0,
+      "spread": 0.803,
+      "overall": 0.517
+    },
+    "split": "test"
+  },
+  {
+    "file": "fixtures/diffs/httpx-3139.diff",
+    "pr_url": "https://github.com/encode/httpx/pull/3139",
+    "ground_truth": "No defect found in review. Merged and not reverted: Add support for zstd decoding. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "chars": 18685,
+    "risk": {
+      "security": 0.442,
+      "concurrency": 0.0,
+      "compatibility": 0.417,
+      "performance": 0.064,
+      "size": 0.353,
+      "untested": 0.0,
+      "spread": 0.847,
+      "overall": 0.313
+    },
+    "split": "dev"
+  },
+  {
+    "file": "fixtures/diffs/redis-13440.diff",
+    "pr_url": "https://github.com/redis/redis/pull/13440",
+    "ground_truth": "No defect found in review. Merged and not reverted: Keep cluster shards command implementation generic. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "chars": 12600,
+    "risk": {
+      "security": 0.736,
+      "concurrency": 0.0,
+      "compatibility": 0.66,
+      "performance": 0.064,
+      "size": 0.526,
+      "untested": 0.7,
+      "spread": 0.313,
+      "overall": 0.459
+    },
+    "split": "test"
+  },
+  {
+    "file": "fixtures/diffs/flask-5223.diff",
+    "pr_url": "https://github.com/pallets/flask/pull/5223",
+    "ground_truth": "No defect found in review. Merged and not reverted: Remove deprecated code. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "chars": 10055,
+    "risk": {
+      "security": 0.0,
+      "concurrency": 0.0,
+      "compatibility": 0.907,
+      "performance": 0.0,
+      "size": 0.434,
+      "untested": 1.0,
+      "spread": 0.583,
+      "overall": 0.381
+    },
+    "split": "dev"
+  },
+  {
+    "file": "fixtures/diffs/flask-5161.diff",
+    "pr_url": "https://github.com/pallets/flask/pull/5161",
+    "ground_truth": "No defect found in review. Merged and not reverted: Fix use of importlib.util.find_spec. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "chars": 6633,
+    "risk": {
+      "security": 0.0,
+      "concurrency": 0.0,
+      "compatibility": 0.555,
+      "performance": 0.064,
+      "size": 0.259,
+      "untested": 0.7,
+      "spread": 0.313,
+      "overall": 0.243
+    },
+    "split": "test"
+  },
+  {
+    "file": "fixtures/diffs/django-18518.diff",
+    "pr_url": "https://github.com/django/django/pull/18518",
+    "ground_truth": "No defect found in review. Merged and not reverted: Dropped safeguards against very old versions of gettext. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "chars": 30935,
+    "risk": {
+      "security": 0.0,
+      "concurrency": 0.0,
+      "compatibility": 0.999,
+      "performance": 0.0,
+      "size": 0.833,
+      "untested": 0.0,
+      "spread": 0.632,
+      "overall": 0.38
+    },
+    "split": "test"
+  },
+  {
+    "file": "fixtures/diffs/django-18425.diff",
+    "pr_url": "https://github.com/django/django/pull/18425",
+    "ground_truth": "No defect found in review. Merged and not reverted: Updated validate_constraints to consider db_default. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "chars": 14919,
+    "risk": {
+      "security": 0.0,
+      "concurrency": 0.0,
+      "compatibility": 0.467,
+      "performance": 0.181,
+      "size": 0.333,
+      "untested": 0.0,
+      "spread": 0.803,
+      "overall": 0.235
+    },
+    "split": "dev"
+  },
+  {
+    "file": "fixtures/diffs/django-18423.diff",
+    "pr_url": "https://github.com/django/django/pull/18423",
+    "ground_truth": "No defect found in review. Merged and not reverted: Prevented duplicate index when unique is set. A correct review approves it, at most with minor changes.",
+    "label": "good",
+    "chars": 18533,
+    "risk": {
+      "security": 0.931,
+      "concurrency": 0.0,
+      "compatibility": 0.957,
+      "performance": 0.0,
+      "size": 0.546,
+      "untested": 0.0,
+      "spread": 0.528,
+      "overall": 0.492
+    },
+    "split": "dev"
   }
 ]

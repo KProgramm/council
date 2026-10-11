@@ -72,11 +72,11 @@ class RunPrTests(unittest.IsolatedAsyncioTestCase):
             peak = max(peak, running)
             await asyncio.sleep(0.02)
             running -= 1
-            if "boom" in diff:
+            if diff.startswith("boom"):
                 raise RuntimeError("llm down")
             verdict = Message(
                 review_id=review_id, round=1, agent="system", kind="verdict",
-                text=tmap("block" if "bad" in diff else "auto_approve", "bad thing" if "bad" in diff else None).model_dump_json(),
+                text=tmap("block" if diff.startswith("bad") else "auto_approve", "bad thing" if diff.startswith("bad") else None).model_dump_json(),
             )
             await bus.publish(verdict)
             return [verdict]
@@ -100,6 +100,28 @@ class RunPrTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(published[-1].kind, "verdict")
         file_ids = {m.review_id for m in published[:-1]}
         self.assertEqual(file_ids, {"pr1:a.py", "pr1:b.py"})
+
+
+class PrContextTests(unittest.TestCase):
+    def test_each_file_sees_the_rest_of_the_pr_truncated(self) -> None:
+        from council.pr_review import CONTEXT_HEADER, reviewable_files, with_pr_context
+
+        files = {"a.c": "diff --git a/a.c b/a.c\n+decl\n", "b.c": "diff --git a/b.c b/b.c\n" + "+x\n" * 5000}
+        view = with_pr_context("a.c", files, budget=1000)
+        self.assertTrue(view.startswith(files["a.c"]))
+        self.assertIn(CONTEXT_HEADER.strip()[:30], view)
+        self.assertIn("(truncated)", view)
+        self.assertLess(len(view), 2000)
+        self.assertEqual(with_pr_context("a.c", {"a.c": "only"}), "only")
+
+    def test_reviewable_files_skips_generated_and_caps_by_size(self) -> None:
+        diff = "".join(
+            f"diff --git a/{p} b/{p}\n{'+l' * n}\n"
+            for p, n in [("src/a.py", 10), ("vendor/x.py", 99), ("go.sum", 99), ("src/b.py", 50), ("src/c.py", 5)]
+        )
+        from council.pr_review import reviewable_files
+
+        self.assertEqual(list(reviewable_files(diff, max_files=2)), ["src/a.py", "src/b.py"])
 
 
 if __name__ == "__main__":

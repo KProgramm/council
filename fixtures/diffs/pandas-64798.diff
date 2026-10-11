@@ -1,0 +1,343 @@
+diff --git a/doc/source/whatsnew/v0.16.1.rst b/doc/source/whatsnew/v0.16.1.rst
+index c15f56ba61447..cdcf7e2ed7509 100644
+--- a/doc/source/whatsnew/v0.16.1.rst
++++ b/doc/source/whatsnew/v0.16.1.rst
+@@ -266,9 +266,6 @@ enhancements make string operations easier and more consistent with standard pyt
+ 
+      idx = pd.Index(["a,b", "a,c", "b,c"])
+ 
+-     # return Index
+-     idx.str.split(",")
+-
+      # return MultiIndex
+      idx.str.split(",", expand=True)
+ 
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index f3055427be5e0..b25e6a6e9e449 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -263,6 +263,7 @@ Interval
+ 
+ Indexing
+ ^^^^^^^^
++- Bug in :class:`Index` constructor silently accepting unhashable elements (e.g. ``list``, ``dict``, ``set``) which would later cause errors in Index operations (:issue:`20285`)
+ - Bug in :meth:`DataFrame.loc` and :meth:`Series.loc` replacing the index name with the key's name when indexing with an :class:`Index` (:issue:`17110`)
+ - Bug in :meth:`DataFrame.loc` raising ``ValueError`` when setting a row on a :class:`DataFrame` with no columns and the label is not in the index (:issue:`17895`)
+ - Bug in :meth:`DataFrame.loc` returning incorrect dtype when the column key is a ``slice`` (:issue:`63071`)
+diff --git a/pandas/_libs/lib.pyi b/pandas/_libs/lib.pyi
+index e50b301c34868..95d6f139be3c6 100644
+--- a/pandas/_libs/lib.pyi
++++ b/pandas/_libs/lib.pyi
+@@ -85,6 +85,7 @@ def map_infer(
+     convert: bool = ...,
+     ignore_na: bool = ...,
+ ) -> ArrayLike: ...
++def check_all_hashable(values: npt.NDArray[np.object_]) -> None: ...
+ @overload
+ def maybe_convert_objects(
+     objects: npt.NDArray[np.object_],
+diff --git a/pandas/_libs/lib.pyx b/pandas/_libs/lib.pyx
+index 8df146041944e..c30699d6449a1 100644
+--- a/pandas/_libs/lib.pyx
++++ b/pandas/_libs/lib.pyx
+@@ -20,6 +20,11 @@ from cpython.datetime cimport (
+     time,
+     timedelta,
+ )
++from cpython.exc cimport (
++    PyErr_Clear,
++    PyErr_ExceptionMatches,
++    PyErr_Occurred,
++)
+ from cpython.iterator cimport PyIter_Check
+ from cpython.number cimport PyNumber_Check
+ from cpython.object cimport (
+@@ -2586,6 +2591,46 @@ def maybe_convert_numeric(
+     return (ints, None)
+ 
+ 
++cdef extern from "Python.h":
++    # Declare without exception propagation so we can inspect the error
++    # ourselves. The cpython.object declaration uses `except? -1` which
++    # causes Cython to auto-raise before we can check the error type.
++    Py_hash_t _PyObject_Hash "PyObject_Hash"(object) noexcept
++
++
++@cython.boundscheck(False)
++@cython.wraparound(False)
++def check_all_hashable(ndarray[object] values) -> None:
++    """
++    Check that all elements in an object array are hashable.
++
++    Raises
++    ------
++    TypeError
++        If any element is not hashable.
++    """
++    cdef:
++        Py_ssize_t i, n = len(values)
++        object val
++
++    for i in range(n):
++        val = values[i]
++        if is_scalar(val):
++            # Scalars are always hashable, so skip the PyObject_Hash call.
++            # This is a fast path to avoid the overhead of hashing every
++            # element in the common case where all values are scalars.
++            continue
++        if _PyObject_Hash(val) == -1 and PyErr_Occurred():
++            if PyErr_ExceptionMatches(TypeError):
++                PyErr_Clear()
++                raise TypeError(
++                    f"unhashable type: '{type(val).__name__}'"
++                )
++            # Clear non-TypeError exceptions (e.g. ValueError from
++            # numpy timedelta64 without units)
++            PyErr_Clear()
++
++
+ @cython.boundscheck(False)
+ @cython.wraparound(False)
+ def maybe_convert_objects(ndarray[object] objects,
+diff --git a/pandas/core/arrays/datetimelike.py b/pandas/core/arrays/datetimelike.py
+index 5756516ffe855..80f2486fedad0 100644
+--- a/pandas/core/arrays/datetimelike.py
++++ b/pandas/core/arrays/datetimelike.py
+@@ -760,15 +760,17 @@ def fillna(self, value, limit: int | None = None, copy: bool = True) -> Self:
+ 
+     @ravel_compat
+     def map(self, mapper, na_action: Literal["ignore"] | None = None):
+-        from pandas import Index
++        from pandas import (
++            Index,
++            MultiIndex,
++        )
+ 
+         result = map_array(self, mapper, na_action=na_action)
+-        result = Index(result)
+-
+-        if isinstance(result, ABCMultiIndex):
++        if isinstance(result, MultiIndex):
+             return result.to_numpy()
+-        else:
+-            return result.array
++        if isinstance(result, Index):
++            result = result._data
++        return self._cast_pointwise_result(result)
+ 
+     def isin(self, values: ArrayLike) -> npt.NDArray[np.bool_]:
+         """
+diff --git a/pandas/core/indexes/base.py b/pandas/core/indexes/base.py
+index 504ea3b6f96bf..5b96e67184cb0 100644
+--- a/pandas/core/indexes/base.py
++++ b/pandas/core/indexes/base.py
+@@ -576,6 +576,11 @@ def __new__(
+             if "Data must be 1-dimensional" in str(err):
+                 raise ValueError("Index data must be 1-dimensional") from err
+             raise
++
++        if isinstance(arr, np.ndarray) and arr.dtype == np.object_:
++            # GH#20285 reject unhashable elements (e.g. list, dict, set)
++            lib.check_all_hashable(arr)
++
+         arr = ensure_wrapped_if_datetimelike(arr)  # type: ignore[no-untyped-call]
+ 
+         klass = cls._dtype_to_subclass(arr.dtype)
+diff --git a/pandas/core/reshape/melt.py b/pandas/core/reshape/melt.py
+index e8423394750e1..cdd28e7888756 100644
+--- a/pandas/core/reshape/melt.py
++++ b/pandas/core/reshape/melt.py
+@@ -562,7 +562,9 @@ def wide_to_long(
+     ...     set(
+     ...         [
+     ...             match[0]
+-    ...             for match in df.columns.str.findall(r"[A-B]\(.*\)").values
++    ...             for match in df.columns.to_series()
++    ...             .str.findall(r"[A-B]\(.*\)")
++    ...             .values
+     ...             if match != []
+     ...         ]
+     ...     )
+diff --git a/pandas/tests/extension/json/test_json.py b/pandas/tests/extension/json/test_json.py
+index eb4876b70a8b7..bee7ece3a4cf8 100644
+--- a/pandas/tests/extension/json/test_json.py
++++ b/pandas/tests/extension/json/test_json.py
+@@ -199,11 +199,14 @@ def test_ffill_limit_area(
+                 data_missing, limit_area, input_ilocs, expected_ilocs
+             )
+ 
+-    def test_value_counts(self, all_data, dropna, request):
+-        if len(all_data) == 10 or dropna:
+-            request.applymarker(unhashable)
++    @unhashable
++    def test_value_counts(self, all_data, dropna):
+         super().test_value_counts(all_data, dropna)
+ 
++    @unhashable
++    def test_value_counts_with_normalize(self, data):
++        super().test_value_counts_with_normalize(data)
++
+     @unhashable
+     def test_sort_values_frame(self):
+         # TODO (EA.factorize): see if _values_for_factorize allows this.
+diff --git a/pandas/tests/frame/methods/test_describe.py b/pandas/tests/frame/methods/test_describe.py
+index 1f61c7d0f32f9..254cbc1634b45 100644
+--- a/pandas/tests/frame/methods/test_describe.py
++++ b/pandas/tests/frame/methods/test_describe.py
+@@ -352,14 +352,12 @@ def test_describe_percentiles_integer_idx(self):
+         )
+         tm.assert_frame_equal(result, expected)
+ 
+-    def test_describe_does_not_raise_error_for_dictlike_elements(self):
++    def test_describe_raises_for_dictlike_elements(self):
+         # GH#32409
++        # GH#20285 - unhashable elements in Index are rejected
+         df = DataFrame([{"test": {"a": "1"}}, {"test": {"a": "2"}}])
+-        expected = DataFrame(
+-            {"test": [2, 2, {"a": "1"}, 1]}, index=["count", "unique", "top", "freq"]
+-        )
+-        result = df.describe()
+-        tm.assert_frame_equal(result, expected)
++        with pytest.raises(TypeError, match="unhashable type"):
++            df.describe()
+ 
+     @pytest.mark.parametrize("exclude", ["x", "y", ["x", "y"], ["x", "z"]])
+     def test_describe_when_include_all_exclude_not_allowed(self, exclude):
+diff --git a/pandas/tests/frame/methods/test_set_index.py b/pandas/tests/frame/methods/test_set_index.py
+index 9f6f359530131..5e6a8e753bd68 100644
+--- a/pandas/tests/frame/methods/test_set_index.py
++++ b/pandas/tests/frame/methods/test_set_index.py
+@@ -716,17 +716,12 @@ def __str__(self) -> str:
+ 
+         thing1 = Thing("One", "red")
+         thing2 = Thing("Two", "blue")
+-        df = DataFrame([[0, 2], [1, 3]], columns=[thing1, thing2])
+-
+-        msg = 'The parameter "keys" may be a column key, .*'
+-
+-        with pytest.raises(TypeError, match=msg):
+-            # use custom label directly
+-            df.set_index(thing2)
+ 
++        # GH#20285 unhashable elements are now rejected at Index construction,
++        # so the DataFrame cannot even be created with unhashable columns.
++        msg = "unhashable type: 'Thing'"
+         with pytest.raises(TypeError, match=msg):
+-            # custom label wrapped in list
+-            df.set_index([thing2])
++            DataFrame([[0, 2], [1, 3]], columns=[thing1, thing2])
+ 
+     def test_set_index_periodindex(self):
+         # GH#6631
+diff --git a/pandas/tests/frame/test_repr.py b/pandas/tests/frame/test_repr.py
+index 2f220a69cdf2c..a81eef6241005 100644
+--- a/pandas/tests/frame/test_repr.py
++++ b/pandas/tests/frame/test_repr.py
+@@ -67,10 +67,10 @@ def test_assign_index_sequences(self):
+         df.index = index
+         repr(df)
+ 
+-        # this travels an improper code path
++        # GH#20285 unhashable elements (list) are now rejected
+         index[0] = ["faz", "boo"]
+-        df.index = index
+-        repr(df)
++        with pytest.raises(TypeError, match="unhashable type"):
++            df.index = index
+ 
+     def test_repr_with_mi_nat(self):
+         df = DataFrame({"X": [1, 2]}, index=[[NaT, Timestamp("20130101")], ["a", "b"]])
+diff --git a/pandas/tests/indexes/test_base.py b/pandas/tests/indexes/test_base.py
+index 88062b208d544..83de126e38cab 100644
+--- a/pandas/tests/indexes/test_base.py
++++ b/pandas/tests/indexes/test_base.py
+@@ -1071,8 +1071,22 @@ def test_str_attribute_raises(self, index):
+     @pytest.mark.parametrize(
+         "expand,expected",
+         [
+-            (None, Index([["a", "b", "c"], ["d", "e"], ["f"]])),
+-            (False, Index([["a", "b", "c"], ["d", "e"], ["f"]])),
++            pytest.param(
++                None,
++                None,
++                marks=pytest.mark.xfail(
++                    reason="GH#20285 str.split on Index returns unhashable "
++                    "list elements"
++                ),
++            ),
++            pytest.param(
++                False,
++                None,
++                marks=pytest.mark.xfail(
++                    reason="GH#20285 str.split on Index returns unhashable "
++                    "list elements"
++                ),
++            ),
+             (
+                 True,
+                 MultiIndex.from_tuples(
+@@ -1723,6 +1737,16 @@ def test_validate_1d_input(dtype):
+     with pytest.raises(ValueError, match=msg):
+         Index(df, dtype=dtype)
+ 
++    # GH#20285 unhashable elements should be rejected
++    with pytest.raises(TypeError, match="unhashable type"):
++        Index([[1, 2], [3, 4]])
++
++    with pytest.raises(TypeError, match="unhashable type"):
++        Index([1, [2, 3]])
++
++    with pytest.raises(TypeError, match="unhashable type"):
++        Index([{"a": 1}])
++
+     # GH#13601 trying to assign a multi-dimensional array to an index is not allowed
+     ser = Series(0, range(4))
+     with pytest.raises(ValueError, match=msg):
+diff --git a/pandas/tests/strings/test_api.py b/pandas/tests/strings/test_api.py
+index cbb663cdca4ad..314da70388ba6 100644
+--- a/pandas/tests/strings/test_api.py
++++ b/pandas/tests/strings/test_api.py
+@@ -159,6 +159,20 @@ def test_api_per_method(
+         mark = pytest.mark.xfail(raises=raises, reason=reason)
+         request.applymarker(mark)
+ 
++    if (
++        box is Index
++        and method_name in ("findall", "split", "rsplit")
++        and not kwargs.get("expand", False)
++        and values.size > 0
++        and inferred_dtype not in ("bytes", "empty")
++    ):
++        mark = pytest.mark.xfail(
++            raises=TypeError,
++            reason="GH#20285 returns unhashable list elements in Index",
++            strict=False,
++        )
++        request.applymarker(mark)
++
+     t = box(values, dtype=dtype)  # explicit dtype to avoid casting
+     method = getattr(t.str, method_name)
+ 
+diff --git a/pandas/tests/strings/test_split_partition.py b/pandas/tests/strings/test_split_partition.py
+index df16e70d85471..e0a3b152fef26 100644
+--- a/pandas/tests/strings/test_split_partition.py
++++ b/pandas/tests/strings/test_split_partition.py
+@@ -452,13 +452,16 @@ def test_split_with_name_series(any_string_dtype):
+     tm.assert_frame_equal(res, exp)
+ 
+ 
++@pytest.mark.xfail(
++    reason="GH#20285 str.split on Index returns unhashable list elements"
++)
+ def test_split_with_name_index():
+     # GH 12617
+     idx = Index(["a,b", "c,d"], name="xxx")
+     res = idx.str.split(",")
+-    exp = Index([["a", "b"], ["c", "d"]], name="xxx")
+     assert res.nlevels == 1
+-    tm.assert_index_equal(res, exp)
++    assert list(res) == [["a", "b"], ["c", "d"]]
++    assert res.name == "xxx"
+ 
+     res = idx.str.split(",", expand=True)
+     exp = MultiIndex.from_tuples([("a", "b"), ("c", "d")])

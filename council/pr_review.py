@@ -1,9 +1,39 @@
 """Run the council on every changed file of a pull request, in parallel, and merge the results."""
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 
 from contracts.bus import Bus
 from contracts.schema import Message, TradeoffMap
+
+# Files that are noise for a code review: reviewing them costs LLM calls and finds nothing.
+_SKIP_SUFFIXES = (".lock", ".min.js", ".min.css", ".map", ".svg", ".png", ".jpg", ".gif", ".ico", ".pdf", ".sum", ".pb.go")
+_SKIP_PARTS = ("vendor/", "node_modules/", "generated", "zz_generated", "package-lock.json", "pnpm-lock.yaml", "/testdata/", "_pb2")
+
+
+def split_diff(diff: str) -> dict[str, str]:
+    """Split a unified diff into {path: that file's diff}, in order of appearance."""
+    files: dict[str, list[str]] = {}
+    current = None
+    for line in diff.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            current = line.rstrip("\n").rsplit(" b/", 1)[-1]
+            files.setdefault(current, [])
+        if current is not None:
+            files[current].append(line)
+    return {path: "".join(lines) for path, lines in files.items()}
+
+
+def reviewable_files(diff: str, max_files: int = 12) -> dict[str, str]:
+    """Per-file diffs worth reviewing: no lockfiles/generated/vendored code; biggest first when capped."""
+    files = {
+        path: d
+        for path, d in split_diff(diff).items()
+        if not path.lower().endswith(_SKIP_SUFFIXES) and not any(part in path for part in _SKIP_PARTS)
+    }
+    ranked = sorted(files, key=lambda path: -len(files[path]))[:max_files]
+    return {path: files[path] for path in files if path in ranked}
+
 
 # Worst decision wins: one blocked file blocks the PR, one escalation escalates it.
 SEVERITY = {"auto_approve": 0, "approve_with_changes": 1, "block": 2, "escalate": 3}
@@ -54,6 +84,23 @@ def aggregate(review_id: str, per_file: dict[str, TradeoffMap | None]) -> Tradeo
     )
 
 
+CONTEXT_HEADER = (
+    "\n\n# Rest of this pull request (READ-ONLY CONTEXT, truncated). Review ONLY the diff above. "
+    "These other files are part of the same change, so do not claim something is missing, "
+    "undefined, or unchanged if it could be in one of them.\n"
+)
+
+
+def with_pr_context(path: str, file_diffs: dict[str, str], budget: int = 14_000) -> str:
+    """The target file's diff, followed by a truncated view of every other file in the PR."""
+    others = {p: d for p, d in file_diffs.items() if p != path}
+    if not others:
+        return file_diffs[path]
+    per_file = max(400, budget // len(others))
+    parts = [d if len(d) <= per_file else d[:per_file] + "\n... (truncated)\n" for d in others.values()]
+    return file_diffs[path] + CONTEXT_HEADER + "".join(parts)
+
+
 async def run_pr(
     review_id: str,
     file_diffs: dict[str, str],
@@ -70,7 +117,7 @@ async def run_pr(
         bus = make_bus(file_review_id)
         bus.subscribe(publish)
         try:
-            return _last_map(await run_council(diff, bus, file_review_id))
+            return _last_map(await run_council(with_pr_context(path, file_diffs), bus, file_review_id))
         except Exception as error:  # one bad file must not sink the whole PR
             print(f"[review {file_review_id}] council crashed: {error!r}")
             return None

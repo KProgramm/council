@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import csv
 import json
+import os
 import re
 from pathlib import Path
 from statistics import mean
@@ -14,9 +15,13 @@ import matplotlib.pyplot as plt
 
 from agents.base import call_llm
 from agents.runtime import run_council
+from council.pr_review import reviewable_files, run_pr
 from contracts.schema import Message, TradeoffMap
 from transport.memory_bus import MemoryBus
 
+# Diffs bigger than this are reviewed file by file (one council per file, in parallel) so each
+# council can read its slice closely; the single-reviewer baseline always gets the whole diff.
+PER_FILE_CHARS = 12_000
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATASET_PATH = PROJECT_ROOT / "eval" / "dataset.json"
 RESULTS_DIR = PROJECT_ROOT / "eval" / "results"
@@ -184,6 +189,36 @@ async def _score_root_cause(ground_truth: str, review: dict[str, Any]) -> bool:
     return _parse_yes_no(response)
 
 
+async def _run_council(diff: str, review_id: str) -> tuple[list[Message], TradeoffMap]:
+    files = reviewable_files(diff) if len(diff) > PER_FILE_CHARS else {}
+    if len(files) < 2:
+        transcript = await run_council(diff, MemoryBus(), review_id)
+        return transcript, _extract_tradeoff_map(transcript)
+    transcript: list[Message] = []
+
+    async def collect(message: Message) -> None:
+        transcript.append(message)
+
+    pr_map = await run_pr(review_id, files, lambda _id: MemoryBus(), run_council, collect)
+    return transcript, pr_map
+
+
+def _council_review_for_scoring(transcript: list[Message], tradeoff_map: TradeoffMap) -> dict[str, Any]:
+    """What the root-cause judge reads. For per-file runs the full transcript is huge, so give it
+    the decision, root causes, and every distinct claim instead of every message."""
+    reviewer = [m for m in transcript if m.agent != "system"]
+    if len(transcript) < 40:
+        return _review_for_scoring(transcript)
+    claims = sorted({c.concern for m in reviewer for c in m.claims})
+    return {
+        "decision": tradeoff_map.decision,
+        "root_cause": tradeoff_map.root_cause,
+        "suggested_fix": tradeoff_map.suggested_fix,
+        "unresolved": tradeoff_map.unresolved,
+        "claims": claims[:60],
+    }
+
+
 def _extract_tradeoff_map(transcript: list[Message]) -> TradeoffMap:
     verdicts = [
         message
@@ -259,9 +294,8 @@ async def _evaluate_entry(entry: dict[str, str]) -> tuple[dict[str, Any], dict[s
     baseline_caught = label == "bad" and await _score_root_cause(ground_truth, baseline_review)
     baseline_scores = _score_run([baseline_message], baseline_caught, None, label)
 
-    council_transcript = await run_council(diff, MemoryBus(), review_id)
-    tradeoff_map = _extract_tradeoff_map(council_transcript)
-    council_review = _review_for_scoring(council_transcript)
+    council_transcript, tradeoff_map = await _run_council(diff, review_id)
+    council_review = _council_review_for_scoring(council_transcript, tradeoff_map)
     council_caught = label == "bad" and await _score_root_cause(ground_truth, council_review)
     council_scores = _score_run(council_transcript, council_caught, tradeoff_map, label)
 
@@ -381,8 +415,13 @@ async def run_evaluation(
     summary_rows: list[dict[str, Any]] = []
     used_names: set[str] = set()
 
-    for entry in entries:
-        evaluated, summary_row = await _evaluate_entry(entry)
+    gate = asyncio.Semaphore(int(os.getenv("EVAL_PARALLEL", "4")))
+
+    async def guarded(entry):
+        async with gate:
+            return await _evaluate_entry(entry)
+
+    for evaluated, summary_row in await asyncio.gather(*(guarded(e) for e in entries)):
         name = evaluated["name"]
         if name in used_names:
             raise ValueError(f"Duplicate evaluation result name: {name}")

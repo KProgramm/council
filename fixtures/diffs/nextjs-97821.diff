@@ -1,0 +1,261 @@
+diff --git a/packages/next/src/build/adapter/build-complete.ts b/packages/next/src/build/adapter/build-complete.ts
+index f9d295ce8331..bf889b08cd49 100644
+--- a/packages/next/src/build/adapter/build-complete.ts
++++ b/packages/next/src/build/adapter/build-complete.ts
+@@ -1260,6 +1260,14 @@ export async function handleBuildComplete({
+         ctx: {
+           htmlAllowQuery?: string[]
+           dataAllowQuery?: string[]
++          // The cache lifetime of the route's fallback artifacts, from the
++          // prerender manifest. Segment outputs attach this when the route
++          // has no HTML fallback output to inherit it from (a blocking
++          // route): the segment payloads are cached and served even then,
++          // and platforms interpret a missing revalidate as a 1-second
++          // lifetime, so segment outputs must always carry one.
++          fallbackRevalidate?: Revalidate
++          fallbackExpire?: number
+         }
+       ) => {
+         if (meta.postponed && initialOutput.fallback) {
+@@ -1325,8 +1333,12 @@ export async function handleBuildComplete({
+               fallback: {
+                 filePath: fallbackPathname,
+                 postponedState: undefined,
+-                initialExpiration: initialOutput.fallback?.initialExpiration,
+-                initialRevalidate: initialOutput.fallback?.initialRevalidate,
++                initialExpiration:
++                  initialOutput.fallback?.initialExpiration ??
++                  ctx.fallbackExpire,
++                initialRevalidate:
++                  initialOutput.fallback?.initialRevalidate ??
++                  ctx.fallbackRevalidate,
+ 
+                 initialHeaders: {
+                   ...meta.headers,
+@@ -1926,6 +1938,8 @@ export async function handleBuildComplete({
+             await handleAppMeta(dynamicRoute, initialOutput, meta, {
+               htmlAllowQuery,
+               dataAllowQuery,
++              fallbackRevalidate,
++              fallbackExpire,
+             })
+           }
+ 
+@@ -1939,6 +1953,15 @@ export async function handleBuildComplete({
+                 filePath: undefined,
+                 postponedState: meta.postponed,
+                 initialStatus: undefined,
++                // A blocking route has no HTML fallback to spread these
++                // from, but its on-demand RSC template renders are still
++                // cached, so give those entries the lifetime recorded in
++                // the prerender manifest.
++                initialExpiration:
++                  initialOutput.fallback?.initialExpiration ?? fallbackExpire,
++                initialRevalidate:
++                  initialOutput.fallback?.initialRevalidate ??
++                  fallbackRevalidate,
+                 initialHeaders: {
+                   ...initialOutput.fallback?.initialHeaders,
+                   ...dataInitialHeaders,
+diff --git a/packages/next/src/build/index.ts b/packages/next/src/build/index.ts
+index d41ca6bafeb8..c181b975db23 100644
+--- a/packages/next/src/build/index.ts
++++ b/packages/next/src/build/index.ts
+@@ -3829,20 +3829,33 @@ export default async function build(
+                   routeResult?.hasEmptyStaticShell
+                 )
+ 
+-                // When the route is configured to serve a prerender, we should
+-                // use the cache control from the export result. If it can't be
+-                // found, mark that we should keep the shell forever
+-                // (revalidate: `false` via `getCacheControl()`).
+-                const fallbackCacheControl =
+-                  isRoutePPREnabled && fallbackMode === FallbackMode.PRERENDER
+-                    ? cacheControl
+-                    : undefined
++                // The cache lifetime collected while prerendering this route's
++                // fallback. It's recorded for every PPR route, not just those
++                // that serve an HTML fallback: the fallback prerender runs
++                // either way, and the artifacts it produces — the per-segment
++                // prefetch payloads and the RSC template — are cached and
++                // served even when the HTML fallback itself is not
++                // (`fallback: null`, blocking). Cache layers use this value to
++                // decide when entries for URLs without their own prerender go
++                // stale, and they interpret a missing value as a 1-second
++                // lifetime, so it must be present whenever such entries can
++                // exist. When the export collected no cache control,
++                // `getCacheControl()` returns revalidate: `false` (keep until
++                // invalidated).
++                const fallbackCacheControl = isRoutePPREnabled
++                  ? cacheControl
++                  : undefined
+ 
+                 const fallback: Fallback = fallbackModeToFallbackField(
+                   fallbackMode,
+                   route.pathname
+                 )
+ 
++                // Unlike the cache lifetime above, the status and headers
++                // describe the prerendered fallback response itself, so they
++                // only apply when a fallback is actually served (PRERENDER
++                // mode). A blocking route's on-demand renders produce their
++                // own status and headers per request.
+                 const meta =
+                   metadata &&
+                   isRoutePPREnabled &&
+diff --git a/test/production/app-dir/adapter-prerender-metadata/adapter-prerender-metadata.test.ts b/test/production/app-dir/adapter-prerender-metadata/adapter-prerender-metadata.test.ts
+index e9877dcd5a53..036b377ec686 100644
+--- a/test/production/app-dir/adapter-prerender-metadata/adapter-prerender-metadata.test.ts
++++ b/test/production/app-dir/adapter-prerender-metadata/adapter-prerender-metadata.test.ts
+@@ -490,4 +490,65 @@ describe('adapter-prerender-metadata', () => {
+       expectUnclassified(segment)
+     }
+   })
++
++  it('records the fallback lifetime for blocking dynamic routes', async () => {
++    // A route whose cached shell is keyed on its params serves no HTML
++    // fallback (`fallback: null`), but its per-segment prefetch payloads and
++    // RSC template are still served and cached. The manifest must carry the
++    // shell's cache lifetime so consumers don't fall back to their
++    // 1-second default.
++    const manifest = await getPrerenderManifest()
++    expect(manifest.dynamicRoutes['/blocking-cached/[id]']).toMatchObject({
++      fallback: null,
++      fallbackRevalidate: 3600,
++      fallbackExpire: 86400,
++    })
++  })
++
++  it('gives segment outputs of a blocking route the shell cache lifetime', async () => {
++    const prerenders = await getPrerenders()
++
++    const segments = prerenders.filter((output) =>
++      output.pathname.startsWith('/blocking-cached/[id].segments/')
++    )
++    expect(segments.length).toBeGreaterThan(0)
++    for (const segment of segments) {
++      expect(segment.fallback.initialRevalidate).toBe(3600)
++      expect(segment.fallback.initialExpiration).toBe(86400)
++    }
++
++    const templateRsc = prerenders.find(
++      (output) => output.pathname === '/blocking-cached/[id].rsc'
++    )
++    expect(templateRsc).toBeDefined()
++    expect(templateRsc.fallback.initialRevalidate).toBe(3600)
++    expect(templateRsc.fallback.initialExpiration).toBe(86400)
++
++    // Concrete generated paths carry the same lifetime through the
++    // routes manifest.
++    const concreteSegments = prerenders.filter((output) =>
++      output.pathname.startsWith('/blocking-cached/known.segments/')
++    )
++    expect(concreteSegments.length).toBeGreaterThan(0)
++    for (const segment of concreteSegments) {
++      expect(segment.fallback.initialRevalidate).toBe(3600)
++      expect(segment.fallback.initialExpiration).toBe(86400)
++    }
++  })
++
++  it('never emits a segment output without a revalidate lifetime', async () => {
++    // Regression test: segment outputs used to inherit the revalidate of the
++    // route's HTML fallback, which doesn't exist for blocking routes. The
++    // resulting `undefined` was interpreted downstream as a 1-second TTL,
++    // causing an ISR cache write on nearly every prefetch of a
++    // non-prerendered URL.
++    const prerenders = await getPrerenders()
++    const segments = prerenders.filter((output) =>
++      output.pathname.includes('.segments/')
++    )
++    expect(segments.length).toBeGreaterThan(0)
++    for (const segment of segments) {
++      expect(segment.fallback.initialRevalidate).toBeDefined()
++    }
++  })
+ })
+diff --git a/test/production/app-dir/adapter-prerender-metadata/app/blocking-cached/[id]/page.tsx b/test/production/app-dir/adapter-prerender-metadata/app/blocking-cached/[id]/page.tsx
+new file mode 100644
+index 000000000000..b3baca38f19b
+--- /dev/null
++++ b/test/production/app-dir/adapter-prerender-metadata/app/blocking-cached/[id]/page.tsx
+@@ -0,0 +1,53 @@
++import { Suspense } from 'react'
++import { cookies } from 'next/headers'
++import { cacheLife } from 'next/cache'
++
++// A dynamic route whose cached shell is keyed on its params. The fallback
++// shell prerender suspends at the shell, so no HTML fallback is emitted
++// (`fallback: null`, blocking) — but per-segment prefetch payloads are still
++// written and served, and their lifetime must reflect the cache lifetimes
++// collected during the fallback prerender (the layout's CachedBanner).
++
++async function Shell({
++  params,
++  children,
++}: {
++  params: Promise<{ id: string }>
++  children: React.ReactNode
++}) {
++  'use cache'
++  // Same lifetime as the layout's CachedBanner, so the concrete generated
++  // path (which collects both caches) agrees with the fallback export
++  // (which only collects the banner).
++  cacheLife({ stale: 300, revalidate: 3600, expire: 86400 })
++  const { id } = await params
++  return (
++    <div>
++      <h1>Shell for {id}</h1>
++      {children}
++    </div>
++  )
++}
++
++async function Dynamic() {
++  const jar = await cookies()
++  return <p>session: {jar.get('session')?.value ?? 'anon'}</p>
++}
++
++export async function generateStaticParams() {
++  return [{ id: 'known' }]
++}
++
++export default async function Page({
++  params,
++}: {
++  params: Promise<{ id: string }>
++}) {
++  return (
++    <Shell params={params}>
++      <Suspense fallback={<p>loading…</p>}>
++        <Dynamic />
++      </Suspense>
++    </Shell>
++  )
++}
+diff --git a/test/production/app-dir/adapter-prerender-metadata/app/blocking-cached/layout.tsx b/test/production/app-dir/adapter-prerender-metadata/app/blocking-cached/layout.tsx
+new file mode 100644
+index 000000000000..48e86b29ff14
+--- /dev/null
++++ b/test/production/app-dir/adapter-prerender-metadata/app/blocking-cached/layout.tsx
+@@ -0,0 +1,21 @@
++import { ReactNode } from 'react'
++import { cacheLife } from 'next/cache'
++
++// A cached component that completes during the fallback shell prerender (it
++// doesn't read params), so its cacheLife propagates to the collected cache
++// control of the fallback export.
++
++async function CachedBanner() {
++  'use cache'
++  cacheLife({ stale: 300, revalidate: 3600, expire: 86400 })
++  return <p>banner</p>
++}
++
++export default function Layout({ children }: { children: ReactNode }) {
++  return (
++    <>
++      <CachedBanner />
++      {children}
++    </>
++  )
++}

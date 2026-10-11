@@ -1,0 +1,234 @@
+diff --git a/AUTHORS b/AUTHORS
+index 14a35c3d5c3..67e794527fb 100644
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -54,6 +54,7 @@ Aviral Verma
+ Aviv Palivoda
+ Babak Keyvani
+ Barney Gale
++Ben Brown
+ Ben Gartner
+ Ben Webb
+ Benjamin Peterson
+diff --git a/changelog/11706.bugfix.rst b/changelog/11706.bugfix.rst
+new file mode 100644
+index 00000000000..1b90d8f0b60
+--- /dev/null
++++ b/changelog/11706.bugfix.rst
+@@ -0,0 +1 @@
++Fix reporting of teardown errors in higher-scoped fixtures when using `--maxfail` or `--stepwise`.
+diff --git a/src/_pytest/main.py b/src/_pytest/main.py
+index 9fb96840e5c..51be84164b2 100644
+--- a/src/_pytest/main.py
++++ b/src/_pytest/main.py
+@@ -6,6 +6,7 @@
+ import importlib
+ import os
+ import sys
++import warnings
+ from pathlib import Path
+ from typing import AbstractSet
+ from typing import Callable
+@@ -44,6 +45,7 @@
+ from _pytest.reports import TestReport
+ from _pytest.runner import collect_one_node
+ from _pytest.runner import SetupState
++from _pytest.warning_types import PytestWarning
+ 
+ 
+ def pytest_addoption(parser: Parser) -> None:
+@@ -548,8 +550,8 @@ def __init__(self, config: Config) -> None:
+         )
+         self.testsfailed = 0
+         self.testscollected = 0
+-        self.shouldstop: Union[bool, str] = False
+-        self.shouldfail: Union[bool, str] = False
++        self._shouldstop: Union[bool, str] = False
++        self._shouldfail: Union[bool, str] = False
+         self.trace = config.trace.root.get("collection")
+         self._initialpaths: FrozenSet[Path] = frozenset()
+         self._initialpaths_with_parents: FrozenSet[Path] = frozenset()
+@@ -576,6 +578,42 @@ def __repr__(self) -> str:
+             self.testscollected,
+         )
+ 
++    @property
++    def shouldstop(self) -> Union[bool, str]:
++        return self._shouldstop
++
++    @shouldstop.setter
++    def shouldstop(self, value: Union[bool, str]) -> None:
++        # The runner checks shouldfail and assumes that if it is set we are
++        # definitely stopping, so prevent unsetting it.
++        if value is False and self._shouldstop:
++            warnings.warn(
++                PytestWarning(
++                    "session.shouldstop cannot be unset after it has been set; ignoring."
++                ),
++                stacklevel=2,
++            )
++            return
++        self._shouldstop = value
++
++    @property
++    def shouldfail(self) -> Union[bool, str]:
++        return self._shouldfail
++
++    @shouldfail.setter
++    def shouldfail(self, value: Union[bool, str]) -> None:
++        # The runner checks shouldfail and assumes that if it is set we are
++        # definitely stopping, so prevent unsetting it.
++        if value is False and self._shouldfail:
++            warnings.warn(
++                PytestWarning(
++                    "session.shouldfail cannot be unset after it has been set; ignoring."
++                ),
++                stacklevel=2,
++            )
++            return
++        self._shouldfail = value
++
+     @property
+     def startpath(self) -> Path:
+         """The path from which pytest was invoked.
+diff --git a/src/_pytest/runner.py b/src/_pytest/runner.py
+index e20338520eb..3e19f0de50c 100644
+--- a/src/_pytest/runner.py
++++ b/src/_pytest/runner.py
+@@ -131,6 +131,10 @@ def runtestprotocol(
+             show_test_item(item)
+         if not item.config.getoption("setuponly", False):
+             reports.append(call_and_report(item, "call", log))
++    # If the session is about to fail or stop, teardown everything - this is
++    # necessary to correctly report fixture teardown errors (see #11706)
++    if item.session.shouldfail or item.session.shouldstop:
++        nextitem = None
+     reports.append(call_and_report(item, "teardown", log, nextitem=nextitem))
+     # After all teardown hooks have been called
+     # want funcargs and request info to go away.
+diff --git a/testing/test_runner.py b/testing/test_runner.py
+index c8b646857e7..26f5b9a0bc2 100644
+--- a/testing/test_runner.py
++++ b/testing/test_runner.py
+@@ -1087,3 +1087,53 @@ def func() -> None:
+     with pytest.raises(TypeError) as excinfo:
+         OutcomeException(func)  # type: ignore
+     assert str(excinfo.value) == expected
++
++
++def test_teardown_session_failed(pytester: Pytester) -> None:
++    """Test that higher-scoped fixture teardowns run in the context of the last
++    item after the test session bails early due to --maxfail.
++
++    Regression test for #11706.
++    """
++    pytester.makepyfile(
++        """
++        import pytest
++
++        @pytest.fixture(scope="module")
++        def baz():
++            yield
++            pytest.fail("This is a failing teardown")
++
++        def test_foo(baz):
++            pytest.fail("This is a failing test")
++
++        def test_bar(): pass
++        """
++    )
++    result = pytester.runpytest("--maxfail=1")
++    result.assert_outcomes(failed=1, errors=1)
++
++
++def test_teardown_session_stopped(pytester: Pytester) -> None:
++    """Test that higher-scoped fixture teardowns run in the context of the last
++    item after the test session bails early due to --stepwise.
++
++    Regression test for #11706.
++    """
++    pytester.makepyfile(
++        """
++        import pytest
++
++        @pytest.fixture(scope="module")
++        def baz():
++            yield
++            pytest.fail("This is a failing teardown")
++
++        def test_foo(baz):
++            pytest.fail("This is a failing test")
++
++        def test_bar(): pass
++        """
++    )
++    result = pytester.runpytest("--stepwise")
++    result.assert_outcomes(failed=1, errors=1)
+diff --git a/testing/test_session.py b/testing/test_session.py
+index 136e85eb640..803bbed5434 100644
+--- a/testing/test_session.py
++++ b/testing/test_session.py
+@@ -418,3 +418,63 @@ def test_rootdir_wrong_option_arg(pytester: Pytester) -> None:
+     result.stderr.fnmatch_lines(
+         ["*Directory *wrong_dir* not found. Check your '--rootdir' option.*"]
+     )
++
++
++def test_shouldfail_is_sticky(pytester: Pytester) -> None:
++    """Test that session.shouldfail cannot be reset to False after being set.
++
++    Issue #11706.
++    """
++    pytester.makeconftest(
++        """
++        def pytest_sessionfinish(session):
++            assert session.shouldfail
++            session.shouldfail = False
++            assert session.shouldfail
++        """
++    )
++    pytester.makepyfile(
++        """
++        import pytest
++
++        def test_foo():
++            pytest.fail("This is a failing test")
++
++        def test_bar(): pass
++        """
++    )
++
++    result = pytester.runpytest("--maxfail=1", "-Wall")
++
++    result.assert_outcomes(failed=1, warnings=1)
++    result.stdout.fnmatch_lines("*session.shouldfail cannot be unset*")
++
++
++def test_shouldstop_is_sticky(pytester: Pytester) -> None:
++    """Test that session.shouldstop cannot be reset to False after being set.
++
++    Issue #11706.
++    """
++    pytester.makeconftest(
++        """
++        def pytest_sessionfinish(session):
++            assert session.shouldstop
++            session.shouldstop = False
++            assert session.shouldstop
++        """
++    )
++    pytester.makepyfile(
++        """
++        import pytest
++
++        def test_foo():
++            pytest.fail("This is a failing test")
++
++        def test_bar(): pass
++        """
++    )
++
++    result = pytester.runpytest("--stepwise", "-Wall")
++
++    result.assert_outcomes(failed=1, warnings=1)
++    result.stdout.fnmatch_lines("*session.shouldstop cannot be unset*")

@@ -1,0 +1,566 @@
+diff --git a/packages/next/src/client/components/app-router.tsx b/packages/next/src/client/components/app-router.tsx
+index d043d825cbe1..9d941d230ba4 100644
+--- a/packages/next/src/client/components/app-router.tsx
++++ b/packages/next/src/client/components/app-router.tsx
+@@ -56,6 +56,43 @@ const globalMutable: {
+   pendingMpaPath?: string
+ } = {}
+ 
++// A Back/Forward press between a reload and hydration moves the browser to
++// a different history entry than the one the document was activated on, and
++// the resulting popstate fires before any listener exists. When that
++// happened, the initial history write is skipped so the traversed entry's
++// state is not overwritten, and the missed popstate is replayed once the
++// router has mounted.
++let missedTraversalBeforeHydration: 'unchecked' | 'missed' | 'none' =
++  'unchecked'
++
++/**
++ * Handles a popstate event (or one that was missed before hydration).
++ * By default dispatches ACTION_RESTORE, however if the history entry was not
++ * pushed/replaced by app-router it will reload the page.
++ * That case can happen when the old router injected the history entry.
++ */
++function handlePopState(state: PopStateEvent['state']): void {
++  if (!state) {
++    // TODO-APP: this case only happens when pushState/replaceState was called outside of Next.js. It should probably reload the page in this case.
++    return
++  }
++
++  // This case happens when the history entry was pushed by the `pages` router.
++  if (!state.__NA) {
++    window.location.reload()
++    return
++  }
++
++  // TODO-APP: Ideally the back button should not use startTransition as it should apply the updates synchronously
++  // Without startTransition works if the cache is there for this path
++  startTransition(() => {
++    dispatchTraverseAction(
++      window.location.href,
++      state.__PRIVATE_NEXTJS_INTERNALS_TREE
++    )
++  })
++}
++
+ function HistoryUpdater({
+   appRouterState,
+ }: {
+@@ -70,6 +107,28 @@ function HistoryUpdater({
+ 
+     const { tree, pushRef, canonicalUrl, renderedSearch } = appRouterState
+ 
++    if (missedTraversalBeforeHydration === 'unchecked') {
++      missedTraversalBeforeHydration = 'none'
++      if (typeof window.navigation !== 'undefined') {
++        // Entry keys are stable across replaceState but not traversals.
++        const activationEntry = window.navigation.activation?.entry
++        const currentEntry = window.navigation.currentEntry
++        if (
++          activationEntry != null &&
++          currentEntry != null &&
++          activationEntry.key !== currentEntry.key &&
++          // Only entries written by the app router can be restored; on any
++          // other entry the traversal is left unhandled, as before.
++          window.history.state?.__NA === true
++        ) {
++          missedTraversalBeforeHydration = 'missed'
++          // The tree was rendered even though the history write is skipped.
++          setLastCommittedTree(tree)
++          return
++        }
++      }
++    }
++
+     const appHistoryState: AppHistoryState = {
+       tree,
+       renderedSearch,
+@@ -371,35 +430,21 @@ function Router({
+       return originalReplaceState(data, _unused, url)
+     }
+ 
+-    /**
+-     * Handle popstate event, this is used to handle back/forward in the browser.
+-     * By default dispatches ACTION_RESTORE, however if the history entry was not pushed/replaced by app-router it will reload the page.
+-     * That case can happen when the old router injected the history entry.
+-     */
+-    const onPopState = (event: PopStateEvent) => {
+-      if (!event.state) {
+-        // TODO-APP: this case only happens when pushState/replaceState was called outside of Next.js. It should probably reload the page in this case.
+-        return
+-      }
++    const onPopState = (event: PopStateEvent) => handlePopState(event.state)
+ 
+-      // This case happens when the history entry was pushed by the `pages` router.
+-      if (!event.state.__NA) {
+-        window.location.reload()
+-        return
+-      }
++    // Register popstate event to call onPopstate.
++    window.addEventListener('popstate', onPopState)
+ 
+-      // TODO-APP: Ideally the back button should not use startTransition as it should apply the updates synchronously
+-      // Without startTransition works if the cache is there for this path
+-      startTransition(() => {
+-        dispatchTraverseAction(
+-          window.location.href,
+-          event.state.__PRIVATE_NEXTJS_INTERNALS_TREE
+-        )
+-      })
++    if (missedTraversalBeforeHydration === 'missed') {
++      missedTraversalBeforeHydration = 'none'
++      // The entry's state may have been rewritten by a third-party script
++      // since the traversal was detected.
++      const entryHistoryState = window.history.state
++      if (entryHistoryState?.__NA) {
++        handlePopState(entryHistoryState)
++      }
+     }
+ 
+-    // Register popstate event to call onPopstate.
+-    window.addEventListener('popstate', onPopState)
+     return () => {
+       window.history.pushState = originalPushState
+       window.history.replaceState = originalReplaceState
+diff --git a/test/e2e/app-dir/back-before-hydration/app/layout.tsx b/test/e2e/app-dir/back-before-hydration/app/layout.tsx
+new file mode 100644
+index 000000000000..e6f5a153286e
+--- /dev/null
++++ b/test/e2e/app-dir/back-before-hydration/app/layout.tsx
+@@ -0,0 +1,16 @@
++import { ThirdPartyPush } from './third-party-push'
++
++export default function RootLayout({
++  children,
++}: {
++  children: React.ReactNode
++}) {
++  return (
++    <html lang="en">
++      <body>
++        <ThirdPartyPush />
++        {children}
++      </body>
++    </html>
++  )
++}
+diff --git a/test/e2e/app-dir/back-before-hydration/app/page.tsx b/test/e2e/app-dir/back-before-hydration/app/page.tsx
+new file mode 100644
+index 000000000000..3f0394ba4ea5
+--- /dev/null
++++ b/test/e2e/app-dir/back-before-hydration/app/page.tsx
+@@ -0,0 +1,12 @@
++import Link from 'next/link'
++
++export default function Home() {
++  return (
++    <>
++      <h1 id="home">Home</h1>
++      <Link id="to-post" href="/post">
++        To post
++      </Link>
++    </>
++  )
++}
+diff --git a/test/e2e/app-dir/back-before-hydration/app/post/page.tsx b/test/e2e/app-dir/back-before-hydration/app/post/page.tsx
+new file mode 100644
+index 000000000000..f900d10621f2
+--- /dev/null
++++ b/test/e2e/app-dir/back-before-hydration/app/post/page.tsx
+@@ -0,0 +1,16 @@
++import Link from 'next/link'
++
++export default function Post() {
++  return (
++    <>
++      <h1 id="post">Post</h1>
++      <Link id="to-home" href="/">
++        To home
++      </Link>
++      <a id="hash-link" href="#section">
++        Jump to section
++      </a>
++      <div id="section">Section</div>
++    </>
++  )
++}
+diff --git a/test/e2e/app-dir/back-before-hydration/app/search/page.tsx b/test/e2e/app-dir/back-before-hydration/app/search/page.tsx
+new file mode 100644
+index 000000000000..bb71d4df5c2c
+--- /dev/null
++++ b/test/e2e/app-dir/back-before-hydration/app/search/page.tsx
+@@ -0,0 +1,28 @@
++import Link from 'next/link'
++import { Suspense } from 'react'
++
++async function CurrentPage({
++  searchParams,
++}: {
++  searchParams: Promise<{ page?: string }>
++}) {
++  const { page = '1' } = await searchParams
++  return <h1 id="search">Page {page}</h1>
++}
++
++export default function Search({
++  searchParams,
++}: {
++  searchParams: Promise<{ page?: string }>
++}) {
++  return (
++    <>
++      <Suspense fallback={null}>
++        <CurrentPage searchParams={searchParams} />
++      </Suspense>
++      <Link id="to-page-2" href="/search?page=2">
++        To page 2
++      </Link>
++    </>
++  )
++}
+diff --git a/test/e2e/app-dir/back-before-hydration/app/third-party-push.tsx b/test/e2e/app-dir/back-before-hydration/app/third-party-push.tsx
+new file mode 100644
+index 000000000000..a807a626ba44
+--- /dev/null
++++ b/test/e2e/app-dir/back-before-hydration/app/third-party-push.tsx
+@@ -0,0 +1,15 @@
++'use client'
++
++import { useEffect } from 'react'
++
++// Simulates a third-party script writing to history between the router's
++// traversal detection and its popstate replay: this component's effect runs
++// after all insertion effects but before the parent router's effects.
++export function ThirdPartyPush() {
++  useEffect(() => {
++    if ((window as any).__injectThirdPartyPush) {
++      window.history.pushState({ thirdParty: true }, '', '/?tp=1')
++    }
++  }, [])
++  return null
++}
+diff --git a/test/e2e/app-dir/back-before-hydration/back-before-hydration.test.ts b/test/e2e/app-dir/back-before-hydration/back-before-hydration.test.ts
+new file mode 100644
+index 000000000000..c7acba04be8e
+--- /dev/null
++++ b/test/e2e/app-dir/back-before-hydration/back-before-hydration.test.ts
+@@ -0,0 +1,319 @@
++import { nextTestSetup } from 'e2e-utils'
++import { retry } from 'next-test-utils'
++import type * as Playwright from 'playwright'
++
++// Reproduces a URL/content desync when the browser's Back button is pressed
++// while a reloaded page has committed but not yet hydrated.
++//
++// Setup: navigate client-side so both history entries are same-document
++// entries created via pushState, then reload. Chrome preserves the
++// same-document association across a reload, so a Back traversal that happens
++// before the new document hydrates is an *instant same-document* traversal:
++// the URL bar changes and popstate fires, but no router is attached yet, so
++// the rendered content stays on the reloaded page. When hydration then
++// completes, the router assumes the current URL matches its payload and calls
++// replaceState() with the payload tree onto the traversed entry. From that
++// point the URL bar and the content permanently disagree, and subsequent
++// Back/Forward traversals update the URL bar without ever changing what is
++// rendered.
++//
++// In manual testing this is easiest to hit with a hard reload (shift+cmd+R)
++// because the widened commit-to-hydration window makes the race human-sized;
++// here we make it deterministic by stalling the static scripts instead.
++describe('back navigation before hydration after reload', () => {
++  const { next } = nextTestSetup({ files: __dirname })
++
++  // Stalls every static script on the page so a committed document cannot
++  // start hydrating until released. (Routing a pattern also disables the
++  // browser HTTP cache for it, so cached scripts are stalled too.)
++  async function stallScripts(page: Playwright.Page) {
++    let stalling = true
++    const stalled: Array<() => void> = []
++    await page.route('**/_next/static/**', async (route) => {
++      if (stalling && route.request().resourceType() === 'script') {
++        await new Promise<void>((resolve) => stalled.push(resolve))
++      }
++      await route.continue()
++    })
++    return function releaseScripts() {
++      stalling = false
++      for (const release of stalled) release()
++    }
++  }
++
++  // Navigates client-side (creating a same-document sibling entry), then
++  // reloads with scripts stalled, returning as soon as the new document
++  // commits. `window.__stayed` is set on the committed document so tests can
++  // assert that hydration did not cause a full reload.
++  //
++  // NOTE: while scripts are stalled, only the raw Playwright `page` may be
++  // used — most `browser.*` helpers wait for the `load` event, which the
++  // stalled scripts block.
++  async function clickThenReloadStalled(
++    startPath: string,
++    linkId: string,
++    headingAfterClick: string
++  ) {
++    let page: Playwright.Page
++    const browser = await next.browser(startPath, {
++      beforePageLoad(p: Playwright.Page) {
++        page = p
++      },
++    })
++
++    await browser.elementById(linkId).click()
++    await retry(async () => {
++      expect(await browser.elementByCss('h1').text()).toBe(headingAfterClick)
++    })
++
++    const releaseScripts = await stallScripts(page)
++    await browser.refresh({ waitUntil: 'commit' })
++    await page.evaluate('window.__stayed = true')
++
++    return { browser, page, releaseScripts }
++  }
++
++  // Loads a path directly with scripts stalled from the start, so the
++  // initial document is parsed but not hydrated until released. Waits for
++  // `readySelector` since document events are blocked by the stalled scripts.
++  async function loadStalled(startPath: string, readySelector: string) {
++    let page: Playwright.Page
++    let releaseScripts: () => void
++    const browser = await next.browser(startPath, {
++      waitUntil: 'commit',
++      waitHydration: false,
++      async beforePageLoad(p: Playwright.Page) {
++        page = p
++        releaseScripts = await stallScripts(p)
++      },
++    })
++    await page.waitForSelector(readySelector)
++    await page.evaluate('window.__stayed = true')
++    return { browser, page, releaseScripts }
++  }
++
++  it('reconciles the URL with the rendered content once hydration completes', async () => {
++    const { browser, releaseScripts } = await clickThenReloadStalled(
++      '/',
++      'to-post',
++      'Post'
++    )
++
++    // Back while the reloaded document is not hydrated: an instant
++    // same-document traversal handled by nobody.
++    await browser.back({ waitUntil: 'commit' })
++    expect(new URL(await browser.url()).pathname).toBe('/')
++
++    releaseScripts()
++
++    // We traversed back to '/', so once the router is up it must render the
++    // home page (or otherwise bring URL and content back in sync).
++    await retry(async () => {
++      expect(new URL(await browser.url()).pathname).toBe('/')
++      expect(await browser.elementByCss('h1').text()).toBe('Home')
++    })
++
++    // History traversal must still work after recovery.
++    await browser.forward()
++    await retry(async () => {
++      expect(new URL(await browser.url()).pathname).toBe('/post')
++      expect(await browser.elementByCss('h1').text()).toBe('Post')
++    })
++
++    await browser.back()
++    await retry(async () => {
++      expect(new URL(await browser.url()).pathname).toBe('/')
++      expect(await browser.elementByCss('h1').text()).toBe('Home')
++    })
++  })
++
++  it('reconciles when the traversed entry differs only in search params', async () => {
++    const { browser, releaseScripts } = await clickThenReloadStalled(
++      '/search?page=1',
++      'to-page-2',
++      'Page 2'
++    )
++
++    await browser.back({ waitUntil: 'commit' })
++    expect(new URL(await browser.url()).search).toBe('?page=1')
++
++    releaseScripts()
++
++    await retry(async () => {
++      expect(new URL(await browser.url()).search).toBe('?page=1')
++      expect(await browser.elementByCss('h1').text()).toBe('Page 1')
++    })
++
++    await browser.forward()
++    await retry(async () => {
++      expect(new URL(await browser.url()).search).toBe('?page=2')
++      expect(await browser.elementByCss('h1').text()).toBe('Page 2')
++    })
++  })
++
++  // History changes before hydration that are NOT missed traversals must not
++  // trigger the recovery: the router should behave exactly as it did before
++  // (adopt the current entry on its first history write, and in particular
++  // never cause a full reload).
++  describe('other history changes before hydration', () => {
++    it('adopts a third-party pushState', async () => {
++      const { browser, page, releaseScripts } = await loadStalled(
++        '/post',
++        '#post'
++      )
++
++      // e.g. analytics/consent tooling running before the framework.
++      await page.evaluate(
++        `window.history.pushState({ thirdParty: true }, '', '/post?tp=1')`
++      )
++      releaseScripts()
++
++      await retry(async () => {
++        expect(await browser.eval('window.__stayed')).toBe(true)
++        expect(await browser.elementByCss('h1').text()).toBe('Post')
++        expect(new URL(await browser.url()).search).toBe('?tp=1')
++      })
++
++      // The router still navigates.
++      await browser.elementById('to-home').click()
++      await retry(async () => {
++        expect(await browser.elementByCss('h1').text()).toBe('Home')
++      })
++    })
++
++    it('keeps an in-page anchor jump on a fresh load', async () => {
++      const { browser, page, releaseScripts } = await loadStalled(
++        '/post',
++        '#post'
++      )
++
++      await page.click('#hash-link')
++      expect(new URL(page.url()).hash).toBe('#section')
++      releaseScripts()
++
++      await retry(async () => {
++        expect(await browser.eval('window.__stayed')).toBe(true)
++        expect(await browser.elementByCss('h1').text()).toBe('Post')
++        expect(new URL(await browser.url()).hash).toBe('#section')
++      })
++
++      // Hash traversals keep behaving like same-page jumps.
++      await browser.back()
++      await retry(async () => {
++        expect(new URL(await browser.url()).hash).toBe('')
++        expect(await browser.elementByCss('h1').text()).toBe('Post')
++      })
++      await browser.forward()
++      await retry(async () => {
++        expect(new URL(await browser.url()).hash).toBe('#section')
++        expect(await browser.elementByCss('h1').text()).toBe('Post')
++      })
++    })
++
++    it('keeps an in-page anchor jump between a reload and hydration', async () => {
++      const { browser, page, releaseScripts } = await clickThenReloadStalled(
++        '/',
++        'to-post',
++        'Post'
++      )
++
++      await page.click('#hash-link')
++      expect(new URL(page.url()).hash).toBe('#section')
++      releaseScripts()
++
++      await retry(async () => {
++        expect(await browser.eval('window.__stayed')).toBe(true)
++        expect(await browser.elementByCss('h1').text()).toBe('Post')
++        expect(new URL(await browser.url()).hash).toBe('#section')
++      })
++
++      // Traversing over the hash entry and the pushState entry still works.
++      await browser.back() // -> /post
++      await browser.back() // -> /
++      await retry(async () => {
++        expect(new URL(await browser.url()).pathname).toBe('/')
++        expect(await browser.elementByCss('h1').text()).toBe('Home')
++      })
++    })
++
++    it('handles a pushState followed by back', async () => {
++      const { browser, page, releaseScripts } = await loadStalled(
++        '/post',
++        '#post'
++      )
++
++      await page.evaluate(
++        `window.history.pushState({ thirdParty: true }, '', '/post?tp=1')`
++      )
++      await page.evaluate(`window.history.back()`)
++      await retry(async () => {
++        expect(new URL(page.url()).search).toBe('')
++      })
++      releaseScripts()
++
++      await retry(async () => {
++        expect(await browser.eval('window.__stayed')).toBe(true)
++        expect(await browser.elementByCss('h1').text()).toBe('Post')
++      })
++
++      await browser.elementById('to-home').click()
++      await retry(async () => {
++        expect(await browser.elementByCss('h1').text()).toBe('Home')
++      })
++    })
++
++    it('leaves the traversal unhandled when a third-party write lands before the replay', async () => {
++      const { browser, page, releaseScripts } = await clickThenReloadStalled(
++        '/',
++        'to-post',
++        'Post'
++      )
++
++      await browser.back({ waitUntil: 'commit' })
++      expect(new URL(await browser.url()).pathname).toBe('/')
++
++      // Arms an effect in the fixture that pushes a third-party history
++      // entry between the router's traversal detection and its replay.
++      await page.evaluate('window.__injectThirdPartyPush = true')
++      releaseScripts()
++
++      await retry(async () => {
++        // The traversal cannot be replayed onto the third-party entry. The
++        // content stays on the reloaded page, like before the fix — and in
++        // particular the router must not reload a page that just loaded.
++        expect(await browser.eval('window.__stayed')).toBe(true)
++        expect(new URL(await browser.url()).search).toBe('?tp=1')
++        expect(await browser.elementByCss('h1').text()).toBe('Post')
++      })
++
++      await browser.elementById('to-home').click()
++      await retry(async () => {
++        expect(await browser.elementByCss('h1').text()).toBe('Home')
++      })
++    })
++
++    it('handles a traversal onto a third-party entry', async () => {
++      const { browser, page, releaseScripts } = await loadStalled(
++        '/post',
++        '#post'
++      )
++
++      await page.evaluate(
++        `window.history.pushState({ a: 1 }, '', '/post?tp=1')`
++      )
++      await page.evaluate(
++        `window.history.pushState({ b: 2 }, '', '/post?tp=2')`
++      )
++      await page.evaluate(`window.history.back()`)
++      await retry(async () => {
++        expect(new URL(page.url()).search).toBe('?tp=1')
++      })
++      releaseScripts()
++
++      await retry(async () => {
++        expect(await browser.eval('window.__stayed')).toBe(true)
++        expect(await browser.elementByCss('h1').text()).toBe('Post')
++      })
++    })
++  })
++})

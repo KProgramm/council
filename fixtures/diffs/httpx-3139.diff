@@ -1,0 +1,489 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 85d3bcec57..18ded9d27f 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+ 
+ ## Unreleased
+ 
++## Added
++
++* Support for `zstd` content decoding using the python `zstandard` package is added. Installable using `httpx[zstd]`. (#3139)
++
+ ### Fixed
+ 
+ * Fix `app` type signature in `ASGITransport`. (#3109)
+diff --git a/README.md b/README.md
+index 62fb295d17..bcba1bb76b 100644
+--- a/README.md
++++ b/README.md
+@@ -138,6 +138,7 @@ As well as these optional installs:
+ * `rich` - Rich terminal support. *(Optional, with `httpx[cli]`)*
+ * `click` - Command line client support. *(Optional, with `httpx[cli]`)*
+ * `brotli` or `brotlicffi` - Decoding for "brotli" compressed responses. *(Optional, with `httpx[brotli]`)*
++* `zstandard` - Decoding for "zstd" compressed responses. *(Optional, with `httpx[zstd]`)*
+ 
+ A huge amount of credit is due to `requests` for the API layout that
+ much of this work follows, as well as to `urllib3` for plenty of design
+diff --git a/docs/index.md b/docs/index.md
+index 86b6d1cbaa..387e85047c 100644
+--- a/docs/index.md
++++ b/docs/index.md
+@@ -119,6 +119,7 @@ As well as these optional installs:
+ * `rich` - Rich terminal support. *(Optional, with `httpx[cli]`)*
+ * `click` - Command line client support. *(Optional, with `httpx[cli]`)*
+ * `brotli` or `brotlicffi` - Decoding for "brotli" compressed responses. *(Optional, with `httpx[brotli]`)*
++* `zstandard` - Decoding for "zstd" compressed responses. *(Optional, with `httpx[zstd]`)*
+ 
+ A huge amount of credit is due to `requests` for the API layout that
+ much of this work follows, as well as to `urllib3` for plenty of design
+@@ -138,10 +139,10 @@ Or, to include the optional HTTP/2 support, use:
+ $ pip install httpx[http2]
+ ```
+ 
+-To include the optional brotli decoder support, use:
++To include the optional brotli and zstandard decoders support, use:
+ 
+ ```shell
+-$ pip install httpx[brotli]
++$ pip install httpx[brotli,zstd]
+ ```
+ 
+ HTTPX requires Python 3.8+
+diff --git a/docs/quickstart.md b/docs/quickstart.md
+index 974119f72c..aa203a8336 100644
+--- a/docs/quickstart.md
++++ b/docs/quickstart.md
+@@ -100,7 +100,8 @@ b'<!doctype html>\n<html>\n<head>\n<title>Example Domain</title>...'
+ 
+ Any `gzip` and `deflate` HTTP response encodings will automatically
+ be decoded for you. If `brotlipy` is installed, then the `brotli` response
+-encoding will also be supported.
++encoding will be supported. If `zstandard` is installed, then `zstd`
++response encodings will also be supported.
+ 
+ For example, to create an image from binary data returned by a request, you can use the following code:
+ 
+@@ -362,7 +363,8 @@ Or stream the text, on a line-by-line basis...
+ 
+ HTTPX will use universal line endings, normalising all cases to `\n`.
+ 
+-In some cases you might want to access the raw bytes on the response without applying any HTTP content decoding. In this case any content encoding that the web server has applied such as `gzip`, `deflate`, or `brotli` will not be automatically decoded.
++In some cases you might want to access the raw bytes on the response without applying any HTTP content decoding. In this case any content encoding that the web server has applied such as `gzip`, `deflate`, `brotli`, or `zstd` will
++not be automatically decoded.
+ 
+ ```pycon
+ >>> with httpx.stream("GET", "https://www.example.com") as r:
+diff --git a/httpx/_compat.py b/httpx/_compat.py
+index 27ccc68273..7d86dced46 100644
+--- a/httpx/_compat.py
++++ b/httpx/_compat.py
+@@ -3,8 +3,11 @@
+ Python environments. It is excluded from the code coverage checks.
+ """
+ 
++import re
+ import ssl
+ import sys
++from types import ModuleType
++from typing import Optional
+ 
+ # Brotli support is optional
+ # The C bindings in `brotli` are recommended for CPython.
+@@ -17,6 +20,24 @@
+     except ImportError:
+         brotli = None
+ 
++# Zstandard support is optional
++zstd: Optional[ModuleType] = None
++try:
++    import zstandard as zstd
++except (AttributeError, ImportError, ValueError):  # Defensive:
++    zstd = None
++else:
++    # The package 'zstandard' added the 'eof' property starting
++    # in v0.18.0 which we require to ensure a complete and
++    # valid zstd stream was fed into the ZstdDecoder.
++    # See: https://github.com/urllib3/urllib3/pull/2624
++    _zstd_version = tuple(
++        map(int, re.search(r"^([0-9]+)\.([0-9]+)", zstd.__version__).groups())  # type: ignore[union-attr]
++    )
++    if _zstd_version < (0, 18):  # Defensive:
++        zstd = None
++
++
+ if sys.version_info >= (3, 10) or ssl.OPENSSL_VERSION_INFO >= (1, 1, 0, 7):
+ 
+     def set_minimum_tls_version_1_2(context: ssl.SSLContext) -> None:
+diff --git a/httpx/_decoders.py b/httpx/_decoders.py
+index f9d3adbb5d..62f2c0b911 100644
+--- a/httpx/_decoders.py
++++ b/httpx/_decoders.py
+@@ -11,7 +11,7 @@
+ import typing
+ import zlib
+ 
+-from ._compat import brotli
++from ._compat import brotli, zstd
+ from ._exceptions import DecodingError
+ 
+ 
+@@ -140,6 +140,44 @@ def flush(self) -> bytes:
+             raise DecodingError(str(exc)) from exc
+ 
+ 
++class ZStandardDecoder(ContentDecoder):
++    """
++    Handle 'zstd' RFC 8878 decoding.
++
++    Requires `pip install zstandard`.
++    Can be installed as a dependency of httpx using `pip install httpx[zstd]`.
++    """
++
++    # inspired by the ZstdDecoder implementation in urllib3
++    def __init__(self) -> None:
++        if zstd is None:  # pragma: no cover
++            raise ImportError(
++                "Using 'ZStandardDecoder', ..."
++                "Make sure to install httpx using `pip install httpx[zstd]`."
++            ) from None
++
++        self.decompressor = zstd.ZstdDecompressor().decompressobj()
++
++    def decode(self, data: bytes) -> bytes:
++        assert zstd is not None
++        output = io.BytesIO()
++        try:
++            output.write(self.decompressor.decompress(data))
++            while self.decompressor.eof and self.decompressor.unused_data:
++                unused_data = self.decompressor.unused_data
++                self.decompressor = zstd.ZstdDecompressor().decompressobj()
++                output.write(self.decompressor.decompress(unused_data))
++        except zstd.ZstdError as exc:
++            raise DecodingError(str(exc)) from exc
++        return output.getvalue()
++
++    def flush(self) -> bytes:
++        ret = self.decompressor.flush()  # note: this is a no-op
++        if not self.decompressor.eof:
++            raise DecodingError("Zstandard data is incomplete")  # pragma: no cover
++        return bytes(ret)
++
++
+ class MultiDecoder(ContentDecoder):
+     """
+     Handle the case where multiple encodings have been applied.
+@@ -323,8 +361,11 @@ def flush(self) -> list[str]:
+     "gzip": GZipDecoder,
+     "deflate": DeflateDecoder,
+     "br": BrotliDecoder,
++    "zstd": ZStandardDecoder,
+ }
+ 
+ 
+ if brotli is None:
+     SUPPORTED_DECODERS.pop("br")  # pragma: no cover
++if zstd is None:
++    SUPPORTED_DECODERS.pop("zstd")  # pragma: no cover
+diff --git a/httpx/_models.py b/httpx/_models.py
+index 92b393a233..01d9583bc5 100644
+--- a/httpx/_models.py
++++ b/httpx/_models.py
+@@ -818,7 +818,7 @@ def read(self) -> bytes:
+     def iter_bytes(self, chunk_size: int | None = None) -> typing.Iterator[bytes]:
+         """
+         A byte-iterator over the decoded response content.
+-        This allows us to handle gzip, deflate, and brotli encoded responses.
++        This allows us to handle gzip, deflate, brotli, and zstd encoded responses.
+         """
+         if hasattr(self, "_content"):
+             chunk_size = len(self._content) if chunk_size is None else chunk_size
+@@ -918,7 +918,7 @@ async def aiter_bytes(
+     ) -> typing.AsyncIterator[bytes]:
+         """
+         A byte-iterator over the decoded response content.
+-        This allows us to handle gzip, deflate, and brotli encoded responses.
++        This allows us to handle gzip, deflate, brotli, and zstd encoded responses.
+         """
+         if hasattr(self, "_content"):
+             chunk_size = len(self._content) if chunk_size is None else chunk_size
+diff --git a/pyproject.toml b/pyproject.toml
+index 9e6464c23a..c4c188052e 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -52,6 +52,9 @@ http2 = [
+ socks = [
+     "socksio==1.*",
+ ]
++zstd = [
++  "zstandard>=0.18.0",
++]
+ 
+ [project.scripts]
+ httpx = "httpx:main"
+diff --git a/requirements.txt b/requirements.txt
+index b9c9588d15..3e73fbdbd3 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -2,7 +2,7 @@
+ # On the other hand, we're not pinning package dependencies, because our tests
+ # needs to pass with the latest version of the packages.
+ # Reference: https://github.com/encode/httpx/pull/1721#discussion_r661241588
+--e .[brotli,cli,http2,socks]
++-e .[brotli,cli,http2,socks,zstd]
+ 
+ # Optional charset auto-detection
+ # Used in our test cases
+diff --git a/tests/client/test_client.py b/tests/client/test_client.py
+index 2951e01b8a..657839018a 100644
+--- a/tests/client/test_client.py
++++ b/tests/client/test_client.py
+@@ -357,7 +357,7 @@ def test_raw_client_header():
+     assert response.json() == [
+         ["Host", "example.org"],
+         ["Accept", "*/*"],
+-        ["Accept-Encoding", "gzip, deflate, br"],
++        ["Accept-Encoding", "gzip, deflate, br, zstd"],
+         ["Connection", "keep-alive"],
+         ["User-Agent", f"python-httpx/{httpx.__version__}"],
+         ["Example-Header", "example-value"],
+diff --git a/tests/client/test_event_hooks.py b/tests/client/test_event_hooks.py
+index 6604dd31a3..78fb0484e6 100644
+--- a/tests/client/test_event_hooks.py
++++ b/tests/client/test_event_hooks.py
+@@ -36,7 +36,7 @@ def on_response(response):
+                 "host": "127.0.0.1:8000",
+                 "user-agent": f"python-httpx/{httpx.__version__}",
+                 "accept": "*/*",
+-                "accept-encoding": "gzip, deflate, br",
++                "accept-encoding": "gzip, deflate, br, zstd",
+                 "connection": "keep-alive",
+                 "authorization": "Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+             },
+@@ -87,7 +87,7 @@ async def on_response(response):
+                 "host": "127.0.0.1:8000",
+                 "user-agent": f"python-httpx/{httpx.__version__}",
+                 "accept": "*/*",
+-                "accept-encoding": "gzip, deflate, br",
++                "accept-encoding": "gzip, deflate, br, zstd",
+                 "connection": "keep-alive",
+                 "authorization": "Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+             },
+@@ -144,7 +144,7 @@ def on_response(response):
+                 "host": "127.0.0.1:8000",
+                 "user-agent": f"python-httpx/{httpx.__version__}",
+                 "accept": "*/*",
+-                "accept-encoding": "gzip, deflate, br",
++                "accept-encoding": "gzip, deflate, br, zstd",
+                 "connection": "keep-alive",
+                 "authorization": "Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+             },
+@@ -159,7 +159,7 @@ def on_response(response):
+                 "host": "127.0.0.1:8000",
+                 "user-agent": f"python-httpx/{httpx.__version__}",
+                 "accept": "*/*",
+-                "accept-encoding": "gzip, deflate, br",
++                "accept-encoding": "gzip, deflate, br, zstd",
+                 "connection": "keep-alive",
+                 "authorization": "Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+             },
+@@ -201,7 +201,7 @@ async def on_response(response):
+                 "host": "127.0.0.1:8000",
+                 "user-agent": f"python-httpx/{httpx.__version__}",
+                 "accept": "*/*",
+-                "accept-encoding": "gzip, deflate, br",
++                "accept-encoding": "gzip, deflate, br, zstd",
+                 "connection": "keep-alive",
+                 "authorization": "Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+             },
+@@ -216,7 +216,7 @@ async def on_response(response):
+                 "host": "127.0.0.1:8000",
+                 "user-agent": f"python-httpx/{httpx.__version__}",
+                 "accept": "*/*",
+-                "accept-encoding": "gzip, deflate, br",
++                "accept-encoding": "gzip, deflate, br, zstd",
+                 "connection": "keep-alive",
+                 "authorization": "Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+             },
+diff --git a/tests/client/test_headers.py b/tests/client/test_headers.py
+index 264ca0bd67..c51e40c335 100755
+--- a/tests/client/test_headers.py
++++ b/tests/client/test_headers.py
+@@ -34,7 +34,7 @@ def test_client_header():
+     assert response.json() == {
+         "headers": {
+             "accept": "*/*",
+-            "accept-encoding": "gzip, deflate, br",
++            "accept-encoding": "gzip, deflate, br, zstd",
+             "connection": "keep-alive",
+             "example-header": "example-value",
+             "host": "example.org",
+@@ -56,7 +56,7 @@ def test_header_merge():
+     assert response.json() == {
+         "headers": {
+             "accept": "*/*",
+-            "accept-encoding": "gzip, deflate, br",
++            "accept-encoding": "gzip, deflate, br, zstd",
+             "connection": "keep-alive",
+             "host": "example.org",
+             "user-agent": "python-myclient/0.2.1",
+@@ -78,7 +78,7 @@ def test_header_merge_conflicting_headers():
+     assert response.json() == {
+         "headers": {
+             "accept": "*/*",
+-            "accept-encoding": "gzip, deflate, br",
++            "accept-encoding": "gzip, deflate, br, zstd",
+             "connection": "keep-alive",
+             "host": "example.org",
+             "user-agent": f"python-httpx/{httpx.__version__}",
+@@ -100,7 +100,7 @@ def test_header_update():
+     assert first_response.json() == {
+         "headers": {
+             "accept": "*/*",
+-            "accept-encoding": "gzip, deflate, br",
++            "accept-encoding": "gzip, deflate, br, zstd",
+             "connection": "keep-alive",
+             "host": "example.org",
+             "user-agent": f"python-httpx/{httpx.__version__}",
+@@ -111,7 +111,7 @@ def test_header_update():
+     assert second_response.json() == {
+         "headers": {
+             "accept": "*/*",
+-            "accept-encoding": "gzip, deflate, br",
++            "accept-encoding": "gzip, deflate, br, zstd",
+             "another-header": "AThing",
+             "connection": "keep-alive",
+             "host": "example.org",
+@@ -164,7 +164,7 @@ def test_remove_default_header():
+     assert response.json() == {
+         "headers": {
+             "accept": "*/*",
+-            "accept-encoding": "gzip, deflate, br",
++            "accept-encoding": "gzip, deflate, br, zstd",
+             "connection": "keep-alive",
+             "host": "example.org",
+         }
+@@ -192,7 +192,7 @@ def test_host_with_auth_and_port_in_url():
+     assert response.json() == {
+         "headers": {
+             "accept": "*/*",
+-            "accept-encoding": "gzip, deflate, br",
++            "accept-encoding": "gzip, deflate, br, zstd",
+             "connection": "keep-alive",
+             "host": "example.org",
+             "user-agent": f"python-httpx/{httpx.__version__}",
+@@ -215,7 +215,7 @@ def test_host_with_non_default_port_in_url():
+     assert response.json() == {
+         "headers": {
+             "accept": "*/*",
+-            "accept-encoding": "gzip, deflate, br",
++            "accept-encoding": "gzip, deflate, br, zstd",
+             "connection": "keep-alive",
+             "host": "example.org:123",
+             "user-agent": f"python-httpx/{httpx.__version__}",
+diff --git a/tests/test_asgi.py b/tests/test_asgi.py
+index ccc5526678..8b817891e4 100644
+--- a/tests/test_asgi.py
++++ b/tests/test_asgi.py
+@@ -157,7 +157,7 @@ async def test_asgi_headers():
+         "headers": [
+             ["host", "www.example.org"],
+             ["accept", "*/*"],
+-            ["accept-encoding", "gzip, deflate, br"],
++            ["accept-encoding", "gzip, deflate, br, zstd"],
+             ["connection", "keep-alive"],
+             ["user-agent", f"python-httpx/{httpx.__version__}"],
+         ]
+diff --git a/tests/test_decoders.py b/tests/test_decoders.py
+index 73644e04e6..bcbb18bb0e 100644
+--- a/tests/test_decoders.py
++++ b/tests/test_decoders.py
+@@ -1,10 +1,12 @@
+ from __future__ import annotations
+ 
++import io
+ import typing
+ import zlib
+ 
+ import chardet
+ import pytest
++import zstandard as zstd
+ 
+ import httpx
+ 
+@@ -73,6 +75,53 @@ def test_brotli():
+     assert response.content == body
+ 
+ 
++def test_zstd():
++    body = b"test 123"
++    compressed_body = zstd.compress(body)
++
++    headers = [(b"Content-Encoding", b"zstd")]
++    response = httpx.Response(
++        200,
++        headers=headers,
++        content=compressed_body,
++    )
++    assert response.content == body
++
++
++def test_zstd_decoding_error():
++    compressed_body = "this_is_not_zstd_compressed_data"
++
++    headers = [(b"Content-Encoding", b"zstd")]
++    with pytest.raises(httpx.DecodingError):
++        httpx.Response(
++            200,
++            headers=headers,
++            content=compressed_body,
++        )
++
++
++def test_zstd_multiframe():
++    # test inspired by urllib3 test suite
++    data = (
++        # Zstandard frame
++        zstd.compress(b"foo")
++        # skippable frame (must be ignored)
++        + bytes.fromhex(
++            "50 2A 4D 18"  # Magic_Number (little-endian)
++            "07 00 00 00"  # Frame_Size (little-endian)
++            "00 00 00 00 00 00 00"  # User_Data
++        )
++        # Zstandard frame
++        + zstd.compress(b"bar")
++    )
++    compressed_body = io.BytesIO(data)
++
++    headers = [(b"Content-Encoding", b"zstd")]
++    response = httpx.Response(200, headers=headers, content=compressed_body)
++    response.read()
++    assert response.content == b"foobar"
++
++
+ def test_multi():
+     body = b"test 123"
+ 
+diff --git a/tests/test_main.py b/tests/test_main.py
+index 67eeb0d228..feb796e155 100644
+--- a/tests/test_main.py
++++ b/tests/test_main.py
+@@ -129,7 +129,7 @@ def test_verbose(server):
+         "GET / HTTP/1.1",
+         f"Host: {server.url.netloc.decode('ascii')}",
+         "Accept: */*",
+-        "Accept-Encoding: gzip, deflate, br",
++        "Accept-Encoding: gzip, deflate, br, zstd",
+         "Connection: keep-alive",
+         f"User-Agent: python-httpx/{httpx.__version__}",
+         "",
+@@ -154,7 +154,7 @@ def test_auth(server):
+         "GET / HTTP/1.1",
+         f"Host: {server.url.netloc.decode('ascii')}",
+         "Accept: */*",
+-        "Accept-Encoding: gzip, deflate, br",
++        "Accept-Encoding: gzip, deflate, br, zstd",
+         "Connection: keep-alive",
+         f"User-Agent: python-httpx/{httpx.__version__}",
+         "Authorization: Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
