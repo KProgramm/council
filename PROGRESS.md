@@ -138,6 +138,30 @@ uvicorn server.app:app --reload
 
 ---
 
+## web-react: alternate React frontend — DONE (Replay and live run verified in browser)
+
+**Live:** `web-react/` is a separate Vite + React + TypeScript UI. `web/` is untouched. It uses shadcn-style components (hand-written in `src/components/ui/`) on Tailwind v4. It has the same features as `web/`: diff viewer, message channel, five-agent position tracker, tradeoff map, diff composer, Load demo diff, Replay, Run council. Light mode is white and yellow; dark mode is black and yellow, following the OS setting until the toggle is used (saved in localStorage). Copy is kept short, with no descriptive text.
+
+**Departures from plan:**
+- This is an extra frontend that PLAN.md does not list. It started on Mantine and was moved to shadcn/Tailwind; Mantine is removed.
+- Vite proxies `/reviews`, `/ws`, `/replay` and `/fixtures` to FastAPI. The target defaults to `http://127.0.0.1:8000`; override with `COUNCIL_API_TARGET`.
+- Replay uses `WS /replay` and falls back to paced local playback of the fixture.
+- The pre-existing uvicorn on port 8000 returned 404 for WebSocket routes because it lacked WebSocket support. `uvicorn[standard]` was installed into `.venv` and a backend started on port 8001. Run a fresh backend, or the Run council and Replay buttons show "No messages".
+- Not covered: visual check of the new yellow theme and a re-test at 390px after the shadcn rewrite.
+
+**Test it:**
+```bash
+uvicorn server.app:app --reload --port 8001
+cd web-react && npm install
+COUNCIL_API_TARGET=http://127.0.0.1:8001 npm run dev
+# open http://127.0.0.1:5173, press Load demo diff, Replay, then Run council
+npm run build && npm run lint
+```
+
+**Unblocks:** a second UI option for the demo (G9/G10). See `web-react/SETUP.md`.
+
+---
+
 ## Krish: Decision engine + large-PR eval — DONE on branch krish/decide (PR pending)
 
 **Live:** the council now decides (`auto_approve` / `approve_with_changes` / `block`, with `root_cause` and `suggested_fix`) instead of escalating. A judge agent (`agents/judge.py`, `prompts/judge.md`) reads the diff and the debate and may ask for up to 3 extra rounds. `escalate` is reserved for a critical security finding. Big PRs are reviewed file by file in parallel (`council/pr_review.py`), each file's council seeing the rest of the PR as read-only context, and merged worst-decision-wins. `agents/pusher.py` formats the PR-level decision as a GitHub comment (dry run by default; not wired to the UI yet).

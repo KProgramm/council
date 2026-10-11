@@ -1,0 +1,174 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  color-scheme: light;
+  --background: #f4f1e8;
+  --foreground: #18211b;
+  --card: #faf8f2;
+  --card-foreground: #18211b;
+  --surface: #faf8f2;
+  --surface-raised: #fffdf7;
+  --primary: #3c5d47;
+  --primary-ink: #3c5d47;
+  --primary-foreground: #f8f7f0;
+  --secondary: #e0e5da;
+  --secondary-foreground: #3c5d47;
+  --muted: #eeece4;
+  --muted-foreground: #5e675e;
+  --accent: #56745e;
+  --accent-strong: #3c5d47;
+  --accent-soft: #e0e5da;
+  --accent-foreground: #18211b;
+  --destructive: #a64f43;
+  --border: #d8d2c5;
+  --input: #d8d2c5;
+  --ring: #56745e;
+  --warn: #8b6a3b;
+  --grid: rgb(52 76 60 / 5.5%);
+  --radius: 0.875rem;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #101512;
+  --foreground: #edf0e7;
+  --card: #151c18;
+  --card-foreground: #edf0e7;
+  --surface: #151c18;
+  --surface-raised: #19221d;
+  --primary: #b3ceb2;
+  --primary-ink: #b3ceb2;
+  --primary-foreground: #101512;
+  --secondary: #243128;
+  --secondary-foreground: #edf0e7;
+  --muted: #202923;
+  --muted-foreground: #9ca69b;
+  --accent: #8eaf91;
+  --accent-strong: #b3ceb2;
+  --accent-soft: #243128;
+  --accent-foreground: #edf0e7;
+  --destructive: #e18373;
+  --border: #2a362f;
+  --input: #2a362f;
+  --ring: #8eaf91;
+  --warn: #d4ad72;
+  --grid: rgb(175 202 176 / 5.5%);
+}
+
+@theme inline {
+  --font-sans: 'Geist Mono', ui-monospace, monospace;
+  --font-mono: 'Geist Mono', ui-monospace, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-primary: var(--primary);
+  --color-primary-ink: var(--primary-ink);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-warn: var(--warn);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
+  body { @apply bg-background text-foreground font-sans antialiased; min-height: 100vh; }
+  button, textarea { font: inherit; }
+}
+
+.perch-shell {
+  display: flex;
+  height: 100dvh;
+  flex-direction: column;
+  overflow: hidden;
+  background-image:
+    linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+  background-size: 30px 30px;
+}
+
+.perch-main,
+.perch-workspace,
+.diff-panel,
+.agent-panel {
+  min-height: 0;
+}
+
+.owl-sprite {
+  width: 48px;
+  height: 48px;
+  background: url('/owl.png') 0 0 / 192px 192px no-repeat;
+  image-rendering: pixelated;
+}
+
+.owl-perched {
+  background-position-y: 0;
+  animation: owl-frames 2.4s steps(4) infinite;
+}
+
+.owl-flying {
+  background-position-y: -48px;
+  animation: owl-frames 0.4s steps(4) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .owl-perched, .owl-flying { animation: none; }
+}
+
+.agent-tab {
+  transition: background-color 160ms ease, color 160ms ease;
+}
+.tradeoff-content {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+@keyframes owl-frames {
+  from { background-position-x: 0; }
+  to { background-position-x: -192px; }
+}
+
+@media (max-width: 1279px), (max-height: 759px) {
+  .perch-shell {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
+  .perch-main,
+  .perch-workspace,
+  .diff-panel,
+  .agent-panel {
+    min-height: auto;
+  }
+
+  .diff-panel { min-height: 480px; }
+  .agent-panel { min-height: 610px; }
+}
+
+@media (max-width: 640px) {
+  .agent-tab { min-height: 68px; padding-inline: 5px; }
+  .agent-summary { font-size: 9px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
