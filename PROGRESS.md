@@ -162,6 +162,35 @@ npm run build && npm run lint
 
 ---
 
+## Krish: Decision engine + large-PR eval — DONE on branch krish/decide (PR pending)
+
+**Live:** the council now decides (`auto_approve` / `approve_with_changes` / `block`, with `root_cause` and `suggested_fix`) instead of escalating. A judge agent (`agents/judge.py`, `prompts/judge.md`) reads the diff and the debate and may ask for up to 3 extra rounds. `escalate` is reserved for a critical security finding. Big PRs are reviewed file by file in parallel (`council/pr_review.py`), each file's council seeing the rest of the PR as read-only context, and merged worst-decision-wins. `agents/pusher.py` formats the PR-level decision as a GitHub comment (dry run by default; not wired to the UI yet).
+
+**Eval (26 PRs: 14 reverted, 12 merged-and-never-reverted; 150-1500 changed lines; dev/test split, prompts tuned on dev only):**
+
+| | Single reviewer | Council |
+|---|---|---|
+| Escalation rate | 0% | 0% (was 88% with the old rules) |
+| Decision accuracy, all 26 | 0.62 | 0.65 |
+| Decision accuracy, held-out test 13 | 0.62 | 0.62 (tie) |
+| Root cause found, reverted PRs (14) | 0.21 (3/14) | 0.29 (4/14) |
+| Root cause found, held-out test | 0.14 | 0.29 |
+| False-block rate, good PRs | 0.08 | 0.17 |
+
+**Honest read:** escalation is solved, root-cause detection is higher, accuracy is a statistical tie (13 PRs per split, one PR is 8 points). The council blocks good PRs somewhat more often than one reviewer. This is not yet a proven win on accuracy. Static risk scores (`eval/risk.py`) do not separate reverted from good PRs (mean 0.35 vs 0.38).
+
+**Departures from plan:** removed the four small Django PRs, whose revert reasons (Oracle versions, a CSS regression, a runtime perf regression) are not visible in a diff. `TradeoffMap` gained four optional fields (`decision`, `root_cause`, `suggested_fix`, `confidence`). Nico's `integrations/github.py` is the GitHub client; mine was removed.
+
+**Test it:**
+```bash
+.venv/bin/python -m unittest discover -s tests
+MAX_CONCURRENT_LLM_CALLS=12 PYTHONPATH=. .venv/bin/python eval/run_eval.py --split test
+```
+
+**Unblocks:** Mayu (UI can show `decision` / `root_cause` / `suggested_fix`), Nico (his PR loader can call `council.pr_review.run_pr` for per-file reviews).
+
+---
+
 ## Template for the next entries
 
 ```

@@ -4,6 +4,8 @@ import math
 from contracts.schema import Message
 
 REVIEWERS = ('security', 'performance', 'compatibility', 'quality', 'product')
+# Rounds 1-3 are the debate; the judge may add up to 3 more when it is unsure (see agents/runtime.py).
+MAX_ROUND = 6
 
 
 class InvalidReviewResponse(ValueError):
@@ -20,11 +22,11 @@ def validate_assessment(message: Message, transcript: list[Message]) -> None:
     if message.round == 1:
         if message.kind != 'assessment' or message.references:
             raise ValueError('Round 1 must be an independent assessment with no references.')
-    elif message.round in {2, 3}:
+    elif 2 <= message.round <= MAX_ROUND:
         if message.kind not in {'rebuttal', 'evidence'} or not message.references:
             raise ValueError('Later rounds must respond to a peer using rebuttal/evidence and references, or pass.')
     else:
-        raise ValueError('Reviewer messages must use rounds 1–3.')
+        raise ValueError(f'Reviewer messages must use rounds 1–{MAX_ROUND}.')
     peers = {item.id: item for item in transcript if item.agent in REVIEWERS and item.agent != message.agent and item.round < message.round}
     for reference in message.references:
         peer = peers.get(reference.message_id)
@@ -60,6 +62,6 @@ def validated_verdict(messages: list[Message]):
     verdict = TradeoffMap.model_validate_json(messages[-1].text)
     if verdict.review_id != messages[-1].review_id or verdict.final_positions != latest:
         raise ValueError('The verdict must reflect the actual reviewer positions.')
-    if verdict.outcome == 'consensus' and check(prior) != 'consensus':
-        raise ValueError('Consensus requires all five reviewers to agree with sufficient confidence.')
+    if verdict.outcome == 'consensus' and check(prior) in (None, 'escalate'):
+        raise ValueError('A non-escalated verdict needs a finished debate that did not end in escalation.')
     return verdict

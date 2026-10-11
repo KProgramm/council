@@ -1,0 +1,341 @@
+diff --git a/django/contrib/postgres/constraints.py b/django/contrib/postgres/constraints.py
+index a6351dc008a6..2701c4ba4844 100644
+--- a/django/contrib/postgres/constraints.py
++++ b/django/contrib/postgres/constraints.py
+@@ -178,7 +178,7 @@ def __repr__(self):
+ 
+     def validate(self, model, instance, exclude=None, using=DEFAULT_DB_ALIAS):
+         queryset = model._default_manager.using(using)
+-        replacement_map = instance._get_field_value_map(
++        replacement_map = instance._get_field_expression_map(
+             meta=model._meta, exclude=exclude
+         )
+         replacements = {F(field): value for field, value in replacement_map.items()}
+diff --git a/django/db/models/base.py b/django/db/models/base.py
+index 9f8c1c0cc0af..d4b8bab96337 100644
+--- a/django/db/models/base.py
++++ b/django/db/models/base.py
+@@ -1333,12 +1333,17 @@ def _get_next_or_previous_in_order(self, is_next):
+             setattr(self, cachename, obj)
+         return getattr(self, cachename)
+ 
+-    def _get_field_value_map(self, meta, exclude=None):
++    def _get_field_expression_map(self, meta, exclude=None):
+         if exclude is None:
+             exclude = set()
+         meta = meta or self._meta
+         field_map = {
+-            field.name: Value(getattr(self, field.attname), field)
++            field.name: (
++                value
++                if (value := getattr(self, field.attname))
++                and hasattr(value, "resolve_expression")
++                else Value(value, field)
++            )
+             for field in meta.local_concrete_fields
+             if field.name not in exclude and not field.generated
+         }
+diff --git a/django/db/models/constraints.py b/django/db/models/constraints.py
+index 0a63e38d8365..915ace512911 100644
+--- a/django/db/models/constraints.py
++++ b/django/db/models/constraints.py
+@@ -241,7 +241,7 @@ def remove_sql(self, model, schema_editor):
+         return schema_editor._delete_check_sql(model, self.name)
+ 
+     def validate(self, model, instance, exclude=None, using=DEFAULT_DB_ALIAS):
+-        against = instance._get_field_value_map(meta=model._meta, exclude=exclude)
++        against = instance._get_field_expression_map(meta=model._meta, exclude=exclude)
+         try:
+             if not Q(self.condition).check(against, using=using):
+                 raise ValidationError(
+@@ -638,7 +638,7 @@ def validate(self, model, instance, exclude=None, using=DEFAULT_DB_ALIAS):
+                         return
+             replacements = {
+                 F(field): value
+-                for field, value in instance._get_field_value_map(
++                for field, value in instance._get_field_expression_map(
+                     meta=model._meta, exclude=exclude
+                 ).items()
+             }
+@@ -668,7 +668,9 @@ def validate(self, model, instance, exclude=None, using=DEFAULT_DB_ALIAS):
+                     code=self.violation_error_code,
+                 )
+         else:
+-            against = instance._get_field_value_map(meta=model._meta, exclude=exclude)
++            against = instance._get_field_expression_map(
++                meta=model._meta, exclude=exclude
++            )
+             try:
+                 if (self.condition & Exists(queryset.filter(self.condition))).check(
+                     against, using=using
+diff --git a/django/db/models/expressions.py b/django/db/models/expressions.py
+index 4a242012ee37..dc09e43fda18 100644
+--- a/django/db/models/expressions.py
++++ b/django/db/models/expressions.py
+@@ -1250,9 +1250,41 @@ def as_sql(self, compiler, connection):
+ 
+ 
+ class DatabaseDefault(Expression):
+-    """Placeholder expression for the database default in an insert query."""
++    """
++    Expression to use DEFAULT keyword during insert otherwise the underlying expression.
++    """
++
++    def __init__(self, expression, output_field=None):
++        super().__init__(output_field)
++        self.expression = expression
++
++    def get_source_expressions(self):
++        return [self.expression]
++
++    def set_source_expressions(self, exprs):
++        (self.expression,) = exprs
++
++    def resolve_expression(
++        self, query=None, allow_joins=True, reuse=None, summarize=False, for_save=False
++    ):
++        resolved_expression = self.expression.resolve_expression(
++            query=query,
++            allow_joins=allow_joins,
++            reuse=reuse,
++            summarize=summarize,
++            for_save=for_save,
++        )
++        # Defaults used outside an INSERT context should resolve to their
++        # underlying expression.
++        if not for_save:
++            return resolved_expression
++        return DatabaseDefault(
++            resolved_expression, output_field=self._output_field_or_none
++        )
+ 
+     def as_sql(self, compiler, connection):
++        if not connection.features.supports_default_keyword_in_insert:
++            return compiler.compile(self.expression)
+         return "DEFAULT", []
+ 
+ 
+diff --git a/django/db/models/fields/__init__.py b/django/db/models/fields/__init__.py
+index 796c4d23c458..d1f31f021135 100644
+--- a/django/db/models/fields/__init__.py
++++ b/django/db/models/fields/__init__.py
+@@ -983,13 +983,7 @@ def get_internal_type(self):
+ 
+     def pre_save(self, model_instance, add):
+         """Return field's value just before saving."""
+-        value = getattr(model_instance, self.attname)
+-        if not connection.features.supports_default_keyword_in_insert:
+-            from django.db.models.expressions import DatabaseDefault
+-
+-            if isinstance(value, DatabaseDefault):
+-                return self._db_default_expression
+-        return value
++        return getattr(model_instance, self.attname)
+ 
+     def get_prep_value(self, value):
+         """Perform preliminary non-db specific value checks and conversions."""
+@@ -1031,7 +1025,9 @@ def _get_default(self):
+         if self.db_default is not NOT_PROVIDED:
+             from django.db.models.expressions import DatabaseDefault
+ 
+-            return DatabaseDefault
++            return lambda: DatabaseDefault(
++                self._db_default_expression, output_field=self
++            )
+ 
+         if (
+             not self.empty_strings_allowed
+diff --git a/docs/releases/5.0.8.txt b/docs/releases/5.0.8.txt
+index 31de9985c46a..5cc3faec98a2 100644
+--- a/docs/releases/5.0.8.txt
++++ b/docs/releases/5.0.8.txt
+@@ -28,3 +28,7 @@ Bugfixes
+ * Fixed a bug in Django 5.0 that caused a system check crash when
+   ``ModelAdmin.date_hierarchy`` was a ``GeneratedField`` with an
+   ``output_field`` of ``DateField`` or ``DateTimeField`` (:ticket:`35628`).
++
++* Fixed a bug in Django 5.0 which caused constraint validation to either crash
++  or incorrectly raise validation errors for constraints referring to fields
++  using ``Field.db_default`` (:ticket:`35638`).
+diff --git a/tests/constraints/models.py b/tests/constraints/models.py
+index 87b97b2a85f0..983d5505022d 100644
+--- a/tests/constraints/models.py
++++ b/tests/constraints/models.py
+@@ -128,3 +128,10 @@ class JSONFieldModel(models.Model):
+ 
+     class Meta:
+         required_db_features = {"supports_json_field"}
++
++
++class ModelWithDatabaseDefault(models.Model):
++    field = models.CharField(max_length=255)
++    field_with_db_default = models.CharField(
++        max_length=255, db_default=models.Value("field_with_db_default")
++    )
+diff --git a/tests/constraints/tests.py b/tests/constraints/tests.py
+index 00c3d958e3eb..350f05f2b851 100644
+--- a/tests/constraints/tests.py
++++ b/tests/constraints/tests.py
+@@ -4,7 +4,7 @@
+ from django.db import IntegrityError, connection, models
+ from django.db.models import F
+ from django.db.models.constraints import BaseConstraint, UniqueConstraint
+-from django.db.models.functions import Abs, Lower
++from django.db.models.functions import Abs, Lower, Upper
+ from django.db.transaction import atomic
+ from django.test import SimpleTestCase, TestCase, skipIfDBFeature, skipUnlessDBFeature
+ from django.test.utils import ignore_warnings
+@@ -14,6 +14,7 @@
+     ChildModel,
+     ChildUniqueConstraintProduct,
+     JSONFieldModel,
++    ModelWithDatabaseDefault,
+     Product,
+     UniqueConstraintConditionProduct,
+     UniqueConstraintDeferrable,
+@@ -396,6 +397,33 @@ def test_check_deprecation(self):
+         with self.assertWarnsRegex(RemovedInDjango60Warning, msg):
+             self.assertIs(constraint.check, other_condition)
+ 
++    def test_database_default(self):
++        models.CheckConstraint(
++            condition=models.Q(field_with_db_default="field_with_db_default"),
++            name="check_field_with_db_default",
++        ).validate(ModelWithDatabaseDefault, ModelWithDatabaseDefault())
++
++        # Ensure that a check also does not silently pass with either
++        # FieldError or DatabaseError when checking with a db_default.
++        with self.assertRaises(ValidationError):
++            models.CheckConstraint(
++                condition=models.Q(
++                    field_with_db_default="field_with_db_default", field="field"
++                ),
++                name="check_field_with_db_default_2",
++            ).validate(
++                ModelWithDatabaseDefault, ModelWithDatabaseDefault(field="not-field")
++            )
++
++        with self.assertRaises(ValidationError):
++            models.CheckConstraint(
++                condition=models.Q(field_with_db_default="field_with_db_default"),
++                name="check_field_with_db_default",
++            ).validate(
++                ModelWithDatabaseDefault,
++                ModelWithDatabaseDefault(field_with_db_default="other value"),
++            )
++
+ 
+ class UniqueConstraintTests(TestCase):
+     @classmethod
+@@ -1265,3 +1293,30 @@ def test_requires_name(self):
+         msg = "A unique constraint must be named."
+         with self.assertRaisesMessage(ValueError, msg):
+             models.UniqueConstraint(fields=["field"])
++
++    def test_database_default(self):
++        models.UniqueConstraint(
++            fields=["field_with_db_default"], name="unique_field_with_db_default"
++        ).validate(ModelWithDatabaseDefault, ModelWithDatabaseDefault())
++        models.UniqueConstraint(
++            Upper("field_with_db_default"),
++            name="unique_field_with_db_default_expression",
++        ).validate(ModelWithDatabaseDefault, ModelWithDatabaseDefault())
++
++        ModelWithDatabaseDefault.objects.create()
++
++        msg = (
++            "Model with database default with this Field with db default already "
++            "exists."
++        )
++        with self.assertRaisesMessage(ValidationError, msg):
++            models.UniqueConstraint(
++                fields=["field_with_db_default"], name="unique_field_with_db_default"
++            ).validate(ModelWithDatabaseDefault, ModelWithDatabaseDefault())
++
++        msg = "Constraint “unique_field_with_db_default_expression” is violated."
++        with self.assertRaisesMessage(ValidationError, msg):
++            models.UniqueConstraint(
++                Upper("field_with_db_default"),
++                name="unique_field_with_db_default_expression",
++            ).validate(ModelWithDatabaseDefault, ModelWithDatabaseDefault())
+diff --git a/tests/postgres_tests/migrations/0002_create_test_models.py b/tests/postgres_tests/migrations/0002_create_test_models.py
+index 5538b436ad3f..188f79607d78 100644
+--- a/tests/postgres_tests/migrations/0002_create_test_models.py
++++ b/tests/postgres_tests/migrations/0002_create_test_models.py
+@@ -434,7 +434,7 @@ class Migration(migrations.Migration):
+                         primary_key=True,
+                     ),
+                 ),
+-                ("ints", IntegerRangeField(null=True, blank=True)),
++                ("ints", IntegerRangeField(null=True, blank=True, db_default=(5, 10))),
+                 ("bigints", BigIntegerRangeField(null=True, blank=True)),
+                 ("decimals", DecimalRangeField(null=True, blank=True)),
+                 ("timestamps", DateTimeRangeField(null=True, blank=True)),
+diff --git a/tests/postgres_tests/models.py b/tests/postgres_tests/models.py
+index a97894e32778..e3118bc5902b 100644
+--- a/tests/postgres_tests/models.py
++++ b/tests/postgres_tests/models.py
+@@ -130,7 +130,7 @@ class LineSavedSearch(PostgreSQLModel):
+ 
+ 
+ class RangesModel(PostgreSQLModel):
+-    ints = IntegerRangeField(blank=True, null=True)
++    ints = IntegerRangeField(blank=True, null=True, db_default=(5, 10))
+     bigints = BigIntegerRangeField(blank=True, null=True)
+     decimals = DecimalRangeField(blank=True, null=True)
+     timestamps = DateTimeRangeField(blank=True, null=True)
+diff --git a/tests/postgres_tests/test_constraints.py b/tests/postgres_tests/test_constraints.py
+index 770d4b170232..f571a96f3534 100644
+--- a/tests/postgres_tests/test_constraints.py
++++ b/tests/postgres_tests/test_constraints.py
+@@ -1213,3 +1213,12 @@ class Meta:
+             constraint_name,
+             self.get_constraints(ModelWithExclusionConstraint._meta.db_table),
+         )
++
++    def test_database_default(self):
++        constraint = ExclusionConstraint(
++            name="ints_equal", expressions=[("ints", RangeOperators.EQUAL)]
++        )
++        RangesModel.objects.create()
++        msg = "Constraint “ints_equal” is violated."
++        with self.assertRaisesMessage(ValidationError, msg):
++            constraint.validate(RangesModel, RangesModel())
+diff --git a/tests/validation/models.py b/tests/validation/models.py
+index 653be4a239bf..ed8875036452 100644
+--- a/tests/validation/models.py
++++ b/tests/validation/models.py
+@@ -48,7 +48,7 @@ def clean(self):
+ 
+ class UniqueFieldsModel(models.Model):
+     unique_charfield = models.CharField(max_length=100, unique=True)
+-    unique_integerfield = models.IntegerField(unique=True)
++    unique_integerfield = models.IntegerField(unique=True, db_default=42)
+     non_unique_field = models.IntegerField()
+ 
+ 
+diff --git a/tests/validation/test_unique.py b/tests/validation/test_unique.py
+index 4a8b3894f03b..36ee6e9da0cb 100644
+--- a/tests/validation/test_unique.py
++++ b/tests/validation/test_unique.py
+@@ -146,6 +146,20 @@ def test_primary_key_unique_check_not_performed_when_not_adding(self):
+             mtv = ModelToValidate(number=10, name="Some Name")
+             mtv.full_clean()
+ 
++    def test_unique_db_default(self):
++        UniqueFieldsModel.objects.create(unique_charfield="foo", non_unique_field=42)
++        um = UniqueFieldsModel(unique_charfield="bar", non_unique_field=42)
++        with self.assertRaises(ValidationError) as cm:
++            um.full_clean()
++        self.assertEqual(
++            cm.exception.message_dict,
++            {
++                "unique_integerfield": [
++                    "Unique fields model with this Unique integerfield already exists."
++                ]
++            },
++        )
++
+     def test_unique_for_date(self):
+         Post.objects.create(
+             title="Django 1.0 is released",

@@ -1,3 +1,4 @@
+from statistics import mean
 import asyncio
 import csv
 import json
@@ -213,6 +214,30 @@ class EvaluationOutputTests(unittest.TestCase):
                 result["council"]["tradeoff_map"]["outcome"],
                 "escalate",
             )
+
+
+class DecisionScoringTests(unittest.TestCase):
+    def test_bad_pr_needs_a_block_or_a_named_root_cause(self) -> None:
+        self.assertTrue(run_eval._is_correct("bad", "block", False))
+        self.assertTrue(run_eval._is_correct("bad", "approve_with_changes", True))
+        self.assertFalse(run_eval._is_correct("bad", "approve_with_changes", False))
+        self.assertFalse(run_eval._is_correct("bad", "auto_approve", True))
+
+    def test_good_pr_may_merge_but_never_block_or_escalate(self) -> None:
+        self.assertTrue(run_eval._is_correct("good", "auto_approve", False))
+        self.assertTrue(run_eval._is_correct("good", "approve_with_changes", False))
+        self.assertFalse(run_eval._is_correct("good", "block", False))
+
+    def test_escalation_is_never_correct(self) -> None:
+        self.assertFalse(run_eval._is_correct("bad", "escalate", True))
+        self.assertFalse(run_eval._is_correct("good", "escalate", False))
+
+    def test_always_block_and_always_approve_with_changes_do_not_win(self) -> None:
+        labels = ["bad", "bad", "good", "good"]
+        always_block = mean(run_eval._is_correct(l, "block", False) for l in labels)
+        always_awc = mean(run_eval._is_correct(l, "approve_with_changes", False) for l in labels)
+        self.assertEqual(always_block, 0.5)
+        self.assertEqual(always_awc, 0.5)
 
 
 if __name__ == "__main__":
