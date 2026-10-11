@@ -11,18 +11,48 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from contracts.schema import Message, TradeoffMap
+from integrations.github import router as github_router
+from server.settings import create_settings_router, check_model_connection
+from server.security import allowed_connection, local_socket
+from server.watcher import RepositoryWatch, create_watch_router
 
 load_dotenv()  # so BUS / SLIM_* from .env are visible to make_bus()
 ROOT = Path(__file__).resolve().parent.parent
 DEMO_TRANSCRIPT = ROOT / "fixtures/transcripts/demo.json"
 REPLAY_DELAY = 1.5  # seconds between replayed messages
 
-app = FastAPI(title="PR Council")
+@asynccontextmanager
+async def lifespan(app):
+    app.state.watch = RepositoryWatch(ROOT / ".council" / "reviews.sqlite3", run_automatic_review)
+    app.state.watch.start()
+    try:
+        yield
+    finally:
+        await app.state.watch.close()
+        for task in list(_tasks):
+            task.cancel()
+        await asyncio.gather(*_tasks, return_exceptions=True)
+
+
+app = FastAPI(title="PR Council", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def protect_local_app(request, call_next):
+    if not allowed_connection(request):
+        return JSONResponse({"detail": "Open Council on this computer using localhost or 127.0.0.1."}, status_code=403)
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+app.include_router(github_router)
 
 
 class ReviewStream:
@@ -32,13 +62,17 @@ class ReviewStream:
     may already be out. Keeping history lets a late (or reconnecting) socket catch up.
     """
 
-    def __init__(self):
+    def __init__(self, sink=None):
+        self.sink = sink
+        self.error = None
         self.history: list[Message] = []
         self.queues: set[asyncio.Queue] = set()
         self.done = False
 
     async def publish(self, msg: Message) -> None:
         # Same signature as a Bus handler, so later it can be passed to bus.subscribe().
+        if self.sink:
+            await self.sink(msg)
         self.history.append(msg)
         for q in self.queues:
             q.put_nowait(msg)
@@ -88,7 +122,7 @@ def make_bus(review_id: str):
     return MemoryBus()
 
 
-async def run_review(diff: str, review_id: str, stream: ReviewStream) -> None:
+async def run_review(diff: str, review_id: str, stream: ReviewStream, *, allow_replay=True) -> None:
     """Run the real council if G1 has landed; otherwise replay the demo transcript."""
     try:
         from agents.runtime import run_council
@@ -103,16 +137,38 @@ async def run_review(diff: str, review_id: str, stream: ReviewStream) -> None:
     except NotImplementedError:
         # Runtime is still a stub. Only fall back if nothing real got published,
         # so we never mix a half-run live debate with fake messages.
-        if not stream.history:
+        if allow_replay and not stream.history:
             await replay_demo(stream, review_id)
+        else:
+            stream.error = "Council runtime is unavailable."
     except Exception as e:
-        print(f"[review {review_id}] council crashed: {e!r}")
+        stream.error = "Council could not finish this review. Check the model connection."
+        print(f"[review {review_id}] council failed ({type(e).__name__})")
     finally:
         stream.close()
 
 
+review_lock = asyncio.Lock()
+
+
+async def run_serial_review(diff, review_id, stream, **options):
+    async with review_lock:
+        await run_review(diff, review_id, stream, **options)
+
+
+async def run_automatic_review(diff, review_id, publish):
+    stream = streams[review_id] = ReviewStream(publish)
+    try:
+        await run_serial_review(diff, review_id, stream, allow_replay=False)
+        if stream.error:
+            raise RuntimeError(stream.error)
+    finally:
+        # Automatic histories are durable and can be read from the queue.
+        streams.pop(review_id, None)
+
+
 class ReviewRequest(BaseModel):
-    diff: str
+    diff: str = Field(min_length=1, max_length=32_000)
 
 
 # Holds references to running tasks; asyncio only keeps weak references, so an
@@ -124,7 +180,7 @@ _tasks: set[asyncio.Task] = set()
 async def create_review(req: ReviewRequest):
     review_id = uuid.uuid4().hex[:8]
     stream = streams[review_id] = ReviewStream()
-    task = asyncio.create_task(run_review(req.diff, review_id, stream))
+    task = asyncio.create_task(run_serial_review(req.diff, review_id, stream))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
     return {"review_id": review_id}
@@ -153,6 +209,8 @@ async def pump(ws: WebSocket, stream: ReviewStream) -> None:
 
 @app.websocket("/ws/{review_id}")
 async def review_socket(ws: WebSocket, review_id: str):
+    if not await local_socket(ws):
+        return
     await ws.accept()
     stream = streams.get(review_id)
     if stream is None:
@@ -164,6 +222,8 @@ async def review_socket(ws: WebSocket, review_id: str):
 @app.websocket("/replay")
 async def replay_socket(ws: WebSocket):
     # Demo backup: each connection gets its own fresh playback of the fixture.
+    if not await local_socket(ws):
+        return
     await ws.accept()
     stream = ReviewStream()
     task = asyncio.create_task(replay_demo(stream, "demo"))
@@ -175,5 +235,12 @@ async def replay_socket(ws: WebSocket):
 
 
 # Static mounts go last: a mount at "/" would otherwise swallow the routes above.
+def connections_busy():
+    watch = getattr(app.state, "watch", None)
+    return any(not task.done() for task in _tasks) or bool(watch and (watch.active or watch.config()["enabled"]))
+
+
+app.include_router(create_settings_router(ROOT / ".env", connections_busy))
+app.include_router(create_watch_router(lambda: app.state.watch, check_model_connection))
 app.mount("/fixtures", StaticFiles(directory=ROOT / "fixtures"), name="fixtures")
 app.mount("/", StaticFiles(directory=ROOT / "web", html=True), name="web")
