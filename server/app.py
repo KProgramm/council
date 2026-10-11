@@ -10,7 +10,7 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -88,42 +88,6 @@ def make_bus(review_id: str):
     return MemoryBus()
 
 
-MAX_PR_FILES = int(os.getenv("MAX_PR_FILES", "25"))  # cost guard: files beyond this are listed, not reviewed
-
-
-async def run_pr_review(pr_url: str, review_id: str, stream: ReviewStream) -> None:
-    """Fetch a GitHub PR (private repos work with GITHUB_TOKEN) and run one council per changed file."""
-    from agents.runtime import run_council
-    from council.pr_review import run_pr
-    from server.github import GitHubError, file_diff, fetch_pr, is_reviewable
-
-    async def say(text: str) -> None:
-        await stream.publish(
-            Message(review_id=review_id, round=0, agent="system", kind="evidence", text=text)
-        )
-
-    try:
-        pr = await fetch_pr(pr_url)
-    except (GitHubError, ValueError) as error:
-        await say(f"Could not load the pull request: {error}")
-        return
-
-    diffs = {
-        f["filename"]: d
-        for f in pr.files
-        if is_reviewable(f["filename"]) and (d := file_diff(f))
-    }
-    skipped = len(pr.files) - len(diffs)
-    if len(diffs) > MAX_PR_FILES:
-        await say(f"{pr.slug} changes {len(diffs)} reviewable files; reviewing the first {MAX_PR_FILES}.")
-        diffs = dict(list(diffs.items())[:MAX_PR_FILES])
-    await say(f"{pr.slug} \"{pr.title}\": reviewing {len(diffs)} file(s) in parallel"
-              + (f", skipping {skipped} (lockfiles, binaries, generated)." if skipped else "."))
-    if not diffs:
-        return
-    await run_pr(review_id, diffs, make_bus, run_council, stream.publish)
-
-
 async def run_review(diff: str, review_id: str, stream: ReviewStream) -> None:
     """Run the real council if G1 has landed; otherwise replay the demo transcript."""
     try:
@@ -148,18 +112,7 @@ async def run_review(diff: str, review_id: str, stream: ReviewStream) -> None:
 
 
 class ReviewRequest(BaseModel):
-    diff: str | None = None      # a pasted unified diff, or
-    pr_url: str | None = None    # https://github.com/<owner>/<repo>/pull/<n>
-
-
-async def _finish(coro, review_id: str, stream: ReviewStream) -> None:
-    """Run a review coroutine and always close its stream so websockets don't hang."""
-    try:
-        await coro
-    except Exception as e:
-        print(f"[review {review_id}] crashed: {e!r}")
-    finally:
-        stream.close()
+    diff: str
 
 
 # Holds references to running tasks; asyncio only keeps weak references, so an
@@ -169,15 +122,9 @@ _tasks: set[asyncio.Task] = set()
 
 @app.post("/reviews")
 async def create_review(req: ReviewRequest):
-    if not req.diff and not req.pr_url:
-        raise HTTPException(status_code=422, detail="Send either diff or pr_url")
     review_id = uuid.uuid4().hex[:8]
     stream = streams[review_id] = ReviewStream()
-    if req.pr_url:
-        coro = run_pr_review(req.pr_url, review_id, stream)
-    else:
-        coro = run_review(req.diff, review_id, stream)
-    task = asyncio.create_task(_finish(coro, review_id, stream))
+    task = asyncio.create_task(run_review(req.diff, review_id, stream))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
     return {"review_id": review_id}

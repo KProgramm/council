@@ -1,11 +1,8 @@
 import asyncio
 import unittest
 
-import httpx
-
 from contracts.schema import Message, TradeoffMap
 from council.pr_review import aggregate, run_pr
-from server import github
 from transport.memory_bus import MemoryBus
 
 TWO_FILE_DIFF = """diff --git a/a.py b/a.py
@@ -37,64 +34,6 @@ def tmap(decision: str, root_cause: str | None = None, confidence: float = 0.9, 
         suggested_fix=f"fix {root_cause}" if root_cause else None,
         confidence=confidence,
     )
-
-
-class GithubHelpersTests(unittest.TestCase):
-    def test_parse_pr_url(self) -> None:
-        self.assertEqual(github.parse_pr_url("https://github.com/o/r.x/pull/12/files"), ("o", "r.x", 12))
-        with self.assertRaises(ValueError):
-            github.parse_pr_url("https://github.com/o/r/issues/12")
-
-    def test_split_diff_keeps_each_files_hunks(self) -> None:
-        parts = github.split_diff(TWO_FILE_DIFF)
-        self.assertEqual(list(parts), ["a.py", "dir/b.py"])
-        self.assertIn("+y", parts["a.py"])
-        self.assertNotIn("+q", parts["a.py"])
-
-    def test_noise_files_are_not_reviewable(self) -> None:
-        self.assertFalse(github.is_reviewable("web/package-lock.json"))
-        self.assertFalse(github.is_reviewable("static/logo.PNG"))
-        self.assertTrue(github.is_reviewable("src/app.py"))
-
-    def test_file_diff_skips_files_without_a_patch(self) -> None:
-        self.assertIsNone(github.file_diff({"filename": "big.bin"}))
-        built = github.file_diff({"filename": "n.py", "previous_filename": "o.py", "patch": "@@ -1 +1 @@\n-a\n+b"})
-        self.assertTrue(built.startswith("diff --git a/o.py b/n.py\n"))
-
-
-class FetchPrTests(unittest.IsolatedAsyncioTestCase):
-    def client(self, handler) -> httpx.AsyncClient:
-        return httpx.AsyncClient(base_url=github.API, transport=httpx.MockTransport(handler))
-
-    async def test_fetch_pr_paginates_files(self) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path.endswith("/files"):
-                page = int(request.url.params["page"])
-                n = 100 if page == 1 else 3
-                return httpx.Response(200, json=[{"filename": f"f{page}-{i}.py", "patch": "@@"} for i in range(n)])
-            return httpx.Response(
-                200,
-                json={"title": "T", "head": {"sha": "abc", "ref": "feat"}, "base": {"ref": "main"}, "mergeable_state": "clean"},
-            )
-
-        pr = await github.fetch_pr("https://github.com/o/r/pull/7", self.client(handler))
-        self.assertEqual((pr.slug, pr.head_sha, len(pr.files)), ("o/r#7", "abc", 103))
-
-    async def test_private_repo_404_explains_the_token(self) -> None:
-        client = self.client(lambda r: httpx.Response(404, json={"message": "Not Found"}))
-        with self.assertRaisesRegex(github.GitHubError, "GITHUB_TOKEN"):
-            await github.fetch_pr("https://github.com/o/r/pull/7", client)
-
-    async def test_token_is_sent_but_never_in_errors(self) -> None:
-        import os
-        from unittest.mock import patch
-
-        with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_secret"}):
-            self.assertEqual(github._headers()["Authorization"], "Bearer ghp_secret")
-        client = self.client(lambda r: httpx.Response(403, json={}, headers={"x-ratelimit-remaining": "0"}))
-        with self.assertRaises(github.GitHubError) as ctx:
-            await github.fetch_pr("https://github.com/o/r/pull/7", client)
-        self.assertNotIn("ghp_secret", str(ctx.exception))
 
 
 class AggregateTests(unittest.TestCase):
