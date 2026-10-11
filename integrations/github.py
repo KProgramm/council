@@ -108,6 +108,7 @@ async def metadata(client: httpx.AsyncClient, api_url: str, canonical_url: str, 
             "title": str(data["title"]),
             "author": str(data["user"]["login"]),
             "state": "merged" if data.get("merged") else str(data["state"]),
+            "draft": bool(data.get("draft")),
             "head_ref": str(data["head"]["ref"]),
             "base_ref": str(data["base"]["ref"]),
             "head_sha": head_sha,
@@ -121,21 +122,27 @@ async def metadata(client: httpx.AsyncClient, api_url: str, canonical_url: str, 
 
 
 def oversized_diff() -> HTTPException:
-    return HTTPException(413, f"This PR is too large for the local Council model (limit: {MAX_DIFF_LINES} diff lines / {MAX_DIFF_BYTES // 1000} KB). Paste a smaller, focused diff instead.")
+    return HTTPException(413, f"This PR is too large for the local Council model (limit: {MAX_DIFF_LINES} diff lines / {MAX_DIFF_BYTES // 1000} KB). This revision will be skipped; reduce the PR size to review it.")
 
 
 @router.post("/repository")
 async def list_pull_requests(req: RepositoryInput, client: httpx.AsyncClient = Depends(github_client)):
     owner, repo = parse_repository(req.repository)
     try:
-        response = await client.get(
-            f"https://api.github.com/repos/{owner}/{repo}/pulls",
-            params={"state": "open", "sort": "created", "direction": "desc", "per_page": 30},
-        )
-        check_response(response)
-        data = response.json()
-        if not isinstance(data, list):
-            raise ValueError("Expected a list")
+        data = []
+        # Construct each page on the fixed API host; never follow supplied Link URLs.
+        for page in range(1, 11):
+            response = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/pulls",
+                params={"state": "open", "sort": "created", "direction": "desc", "per_page": 100, "page": page},
+            )
+            check_response(response)
+            batch = response.json()
+            if not isinstance(batch, list):
+                raise ValueError("Expected a list")
+            data.extend(batch)
+            if len(batch) < 100:
+                break
         pulls = []
         for pr in data:
             number = int(pr["number"])
@@ -151,7 +158,7 @@ async def list_pull_requests(req: RepositoryInput, client: httpx.AsyncClient = D
                 "revision": f"{pr['base']['sha']}:{pr['head']['sha']}",
                 "created_at": str(pr["created_at"]),
             })
-        return {"repository": f"{owner}/{repo}", "pull_requests": pulls, "limit": 30}
+        return {"repository": f"{owner}/{repo}", "pull_requests": pulls, "limit": 1000, "incomplete": len(data) == 1000}
     except httpx.TimeoutException:
         raise HTTPException(504, "GitHub took too long to respond. Try again.") from None
     except httpx.HTTPError:

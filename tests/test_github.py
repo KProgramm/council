@@ -124,6 +124,19 @@ class GitHubTests(unittest.IsolatedAsyncioTestCase):
             response = await self.request("/github/repository", {"repository": repo}, no_network)
             self.assertEqual(response.status_code, 422)
 
+    async def test_repository_paginates_on_fixed_api_host(self):
+        pages = []
+        def handler(request):
+            self.assertEqual(request.url.host, 'api.github.com')
+            page = int(request.url.params['page'])
+            pages.append(page)
+            self.assertEqual(request.url.params['per_page'], '100')
+            return httpx.Response(200, json=[{**INFO, 'number': n + 1} for n in range(100)] if page == 1 else [{**INFO, 'number': 101}])
+        response = await self.request('/github/repository', {'repository': 'o/r'}, handler)
+        self.assertEqual(pages, [1, 2])
+        self.assertEqual(len(response.json()['pull_requests']), 101)
+        self.assertFalse(response.json()['incomplete'])
+
 
 if __name__ == "__main__":
     unittest.main()

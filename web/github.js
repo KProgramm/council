@@ -1,201 +1,166 @@
-/* Repository watching imports diffs; Run council remains the explicit review action. */
-const WATCH_INTERVAL_MS = 120000;
-let githubLoading = false;
+/* The server owns watching, deduplication, execution, and durable review results. */
 let loadedPR = null;
-let loadedGitHubDiff = "";
-let diffEdited = false;
-let watchingRepository = null;
-let watchGeneration = 0;
-let watchTimer = null;
-let watchController = null;
+let watchState = null;
 let watchLoading = false;
-let watchStartedAt = 0;
-let seenPRs = new Set();
-let inboxPRs = [];
-let newPRNumbers = new Set();
+let selectedReview = null;
+let displayedReview = null;
+let displayedCount = 0;
+let refreshTimer = null;
+let refreshGeneration = 0;
+let refreshLoading = false;
+let viewGeneration = 0;
 
 function updateGitHubControls() {
-  const busy = debateBusy || githubLoading;
-  $("run").disabled = busy;
-  $("replay").disabled = busy;
-  $("input").disabled = githubLoading;
-  $("load-pr").disabled = busy;
-  $("pr-url").disabled = busy;
-  $("watch-repository").disabled = busy || watchLoading;
-  $("repository").disabled = busy || watchLoading;
-  $("stop-watching").disabled = !watchingRepository;
-  $("pr-inbox").querySelectorAll("button").forEach(button => { button.disabled = busy; });
+  const automatic = !!watchState?.enabled || !!watchState?.active;
+  $('run').disabled = debateBusy || automatic;
+  $('replay').disabled = debateBusy;
+  $('watch-repository').disabled = watchLoading || debateBusy;
+  $('repository').disabled = watchLoading;
+  $('stop-watching').disabled = watchLoading || !watchState?.enabled;
 }
 
-async function githubRequest(path, payload, signal) {
-  const response = await fetch(HTTP_BASE + "/github/" + path, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload), signal,
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    const error = new Error(typeof data.detail === "string" ? data.detail : "Check the GitHub URL and try again.");
-    error.status = response.status;
-    throw error;
-  }
-  return data;
+async function watchRequest(path = '', payload) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 65000);
+  try {
+    const response = await fetch(HTTP_BASE + '/watch' + path, {
+      method: payload ? 'POST' : 'GET', cache: 'no-store', signal: controller.signal,
+      headers: payload ? { 'Content-Type': 'application/json' } : {},
+      ...(payload ? { body: JSON.stringify(payload) } : {}),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not update the review queue.');
+    return data;
+  } finally { clearTimeout(timeout); }
 }
 
 function renderPRSource() {
-  const source = $("pr-source");
+  const source = $('pr-source');
   source.replaceChildren();
   source.hidden = !loadedPR;
   if (!loadedPR) return;
-  const link = el("a", "", `${loadedPR.repository} #${loadedPR.number}: ${loadedPR.title}`);
+  const link = el('a', '', `${loadedPR.repository} #${loadedPR.number}: ${loadedPR.title}`);
   link.href = loadedPR.url;
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
-  source.append(link, el("p", "github-note",
-    `${loadedPR.state} · ${loadedPR.author} · ${loadedPR.head_ref} → ${loadedPR.base_ref} · ${loadedPR.head_sha.slice(0, 7)} · ${loadedPR.changed_files} files · +${loadedPR.additions} / −${loadedPR.deletions}`));
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  source.append(link, el('p', 'github-note', `Revision ${loadedPR.head_sha.slice(0, 7)} · ${loadedPR.author}`));
 }
 
-function renderPRInbox() {
-  const list = $("pr-inbox");
+function renderWatch(data) {
+  watchState = data;
+  if (data.repository && document.activeElement !== $('repository')) $('repository').value = data.repository;
+  const counts = data.counts;
+  $('watch-status').textContent = data.error || (data.enabled
+    ? `Watching ${data.repository} · ${counts.queued || 0} queued · ${counts.running || 0} reviewing · ${counts.completed || 0} completed${data.last_checked ? ' · checked ' + new Date(data.last_checked * 1000).toLocaleTimeString() : ''}`
+    : data.repository ? `Paused · ${data.repository}. Active reviews finish; queued work waits until you resume.`
+    : 'Connect a repository to begin automatic reviews.');
+  $('watch-repository').textContent = data.repository && !data.enabled ? 'Resume reviews' : 'Watch and review';
+  const list = $('pr-inbox');
   list.replaceChildren();
-  list.hidden = inboxPRs.length === 0;
-  for (const pr of inboxPRs) {
-    const item = el("li", "pr-item");
-    if (loadedPR && pr.url === loadedPR.url) item.classList.add("selected");
-    const description = el("div");
-    description.append(el("div", "pr-title", `#${pr.number} ${pr.title}`));
-    const labels = [pr.author];
-    if (pr.draft) labels.push("Draft");
-    if (newPRNumbers.has(pr.number)) labels.push("New since watching");
-    if (loadedPR && pr.url === loadedPR.url) labels.push("Loaded");
-    description.append(el("div", "github-note", labels.join(" · ")));
-    const load = el("button", "", "Load diff");
-    load.type = "button";
-    load.setAttribute("aria-label", `Load diff for PR #${pr.number}`);
-    load.onclick = () => loadGitHubPR(pr.url);
-    item.append(description, load);
+  list.hidden = !data.jobs.length;
+  for (const job of data.jobs) {
+    const pr = job.pull_request;
+    const item = el('li', 'pr-item');
+    if (selectedReview === job.id) item.classList.add('selected');
+    const description = el('div');
+    description.append(el('div', 'pr-title', `${pr.repository} #${pr.number} ${pr.title}`));
+    description.append(el('div', 'github-note', `${pr.head_sha.slice(0, 7)} · ${job.status}${job.outcome ? ' · ' + job.outcome : ''}`));
+    if (job.error) description.append(el('div', 'review-error', job.error));
+    const view = el('button', '', job.status === 'running' ? 'Watch debate' : 'View review');
+    view.type = 'button';
+    view.onclick = () => { $('follow-reviews').checked = false; selectedReview = job.id; showReview(job.id); };
+    item.append(description, view);
+    if (['failed', 'skipped'].includes(job.status)) {
+      const retry = el('button', '', 'Retry');
+      retry.type = 'button';
+      retry.onclick = async () => {
+        retry.disabled = true;
+        try { renderWatch(await watchRequest('/reviews/' + job.id + '/retry', {})); }
+        catch (error) { $('github-status').textContent = error.message; retry.disabled = false; }
+      };
+      item.append(retry);
+    }
     list.append(item);
   }
   updateGitHubControls();
 }
 
-async function loadGitHubPR(url, { automatic = false, generation = null, knownRevision = null } = {}) {
-  // Preserve an edited diff or an existing debate when background polling finds new work.
-  if (githubLoading || debateBusy || (automatic && (diffEdited || messageCount > 0))) return false;
-  githubLoading = true;
-  updateGitHubControls();
-  $("github-status").textContent = "Fetching the PR diff from GitHub…";
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 65000);
+async function showReview(jobId) {
+  if (debateBusy) return;
+  const generation = ++viewGeneration;
   try {
-    const data = await githubRequest("pull-request", { url, known_revision: knownRevision }, controller.signal);
-    if (generation !== null && generation !== watchGeneration) return false;
-    loadedPR = data.pull_request;
-    if (data.changed) {
+    const data = await watchRequest('/reviews/' + jobId);
+    if (generation !== viewGeneration || debateBusy) return;
+    if (displayedReview !== jobId || data.messages.length < displayedCount) {
       reset();
-      loadedGitHubDiff = data.diff;
-      diffEdited = false;
-      $("input").value = data.diff;
-      renderDiff(data.diff);
-      $("status").textContent = "GitHub diff loaded. Ready to run the council.";
+      displayedReview = jobId;
+      displayedCount = 0;
+      loadedPR = data.pull_request;
+      renderPRSource();
     }
-    $("pr-url").value = loadedPR.url;
-    renderPRSource();
-    renderPRInbox();
-    $("github-status").textContent = data.changed
-      ? "Diff loaded. Click Run council to review it."
-      : "The loaded PR is up to date.";
-    return true;
+    data.messages.slice(displayedCount).forEach(handle);
+    displayedCount = data.messages.length;
+    $('status').textContent = data.status === 'completed' ? 'Review complete. ' + loadedPR.repository + ' #' + loadedPR.number
+      : data.error || `PR #${data.pull_request.number} · ${data.status}`;
+  } catch (error) { if (generation === viewGeneration) $('github-status').textContent = error.message; }
+}
+
+async function refreshWatch() {
+  if (refreshLoading) return;
+  refreshLoading = true;
+  const generation = refreshGeneration;
+  try {
+    const data = await watchRequest();
+    if (generation !== refreshGeneration) return;
+    renderWatch(data);
+    if ($('follow-reviews').checked && !debateBusy) {
+      const current = data.jobs.find(job => job.status === 'running') || data.jobs.find(job => job.status === 'completed');
+      if (current) selectedReview = current.id;
+    }
+    if (selectedReview) await showReview(selectedReview);
   } catch (error) {
-    if (generation !== null && generation !== watchGeneration) return false;
-    $("github-status").textContent = error.name === "AbortError"
-      ? "Loading the diff timed out. Try again."
-      : error.message;
-    return false;
+    if (generation === refreshGeneration) $('watch-status').textContent = error.message + ' Reconnecting…';
   } finally {
-    clearTimeout(timeout);
-    githubLoading = false;
-    updateGitHubControls();
+    refreshLoading = false;
+    if (generation === refreshGeneration) refreshTimer = setTimeout(refreshWatch, 3000);
   }
 }
 
-function stopWatching(message = "Repository watch stopped. Your loaded diff is still available.") {
-  watchGeneration++;
-  clearTimeout(watchTimer);
-  watchController?.abort();
-  watchController = null;
-  watchingRepository = null;
-  watchLoading = false;
-  $("watch-status").textContent = message;
-  updateGitHubControls();
-}
-
-async function pollRepository(generation, initial = false) {
-  if (generation !== watchGeneration || !watchingRepository) return;
-  watchLoading = true;
-  watchController = new AbortController();
-  const controller = watchController;
-  const timeout = setTimeout(() => controller.abort(), 25000);
-  updateGitHubControls();
-  try {
-    const data = await githubRequest("repository", { repository: watchingRepository }, controller.signal);
-    if (generation !== watchGeneration) return;
-    watchingRepository = data.repository;
-    inboxPRs = data.pull_requests;
-    const arrivals = inboxPRs.filter(pr => !seenPRs.has(pr.number) && Date.parse(pr.created_at) >= watchStartedAt);
-    if (!initial) arrivals.forEach(pr => newPRNumbers.add(pr.number));
-    inboxPRs.forEach(pr => seenPRs.add(pr.number));
-    renderPRInbox();
-    $("watch-status").textContent = `Watching ${data.repository} · ${inboxPRs.length} open PRs${inboxPRs.length === data.limit ? " (newest 30)" : ""} · checked ${new Date().toLocaleTimeString()} · next check in two minutes.`;
-    if ($("auto-load-pr").checked) {
-      const candidate = initial ? inboxPRs[0] : arrivals[0];
-      if (candidate) {
-        const loaded = await loadGitHubPR(candidate.url, { automatic: true, generation });
-        if (!loaded && (debateBusy || diffEdited || messageCount > 0)) {
-          $("github-status").textContent = "A new PR is in the inbox. Select Load diff when you are ready.";
-        }
-      } else if (loadedPR && !diffEdited && !debateBusy && messageCount === 0) {
-        const current = inboxPRs.find(pr => pr.url === loadedPR.url);
-        if (current && current.revision !== loadedPR.revision) {
-          await loadGitHubPR(current.url, { automatic: true, generation, knownRevision: loadedPR.revision });
-        }
-      }
-    }
-  } catch (error) {
-    if (generation !== watchGeneration) return;
-    if ([401, 403, 404, 422, 429].includes(error.status)) {
-      stopWatching(error.message + " Watching paused.");
+async function watchRepository() {
+  if (typeof savedConnections !== 'undefined' && savedConnections) {
+    const provider = $('llm-provider').value;
+    const saved = savedConnections.providers[provider] || {};
+    if (provider !== savedConnections.provider || $('llm-model').value.trim() !== saved.model
+        || (provider !== 'paid' && $('llm-base-url').value.trim() !== saved.base_url)
+        || $('llm-api-key').value || $('clear-llm-api-key').checked
+        || $('github-token').value || $('clear-github-token').checked) {
+      $('connection-settings').open = true;
+      $('watch-status').textContent = 'Save your connection changes first, then start automatic reviews.';
       return;
     }
-    $("watch-status").textContent = (error.name === "AbortError" ? "GitHub check timed out." : error.message) + " Will retry in two minutes.";
-  } finally {
-    clearTimeout(timeout);
-    if (generation === watchGeneration && watchingRepository) {
-      watchLoading = false;
-      watchController = null;
-      updateGitHubControls();
-      watchTimer = setTimeout(() => pollRepository(generation), WATCH_INTERVAL_MS);
-    }
   }
+  watchLoading = true;
+  updateGitHubControls();
+  $('watch-status').textContent = 'Checking model and repository access…';
+  try {
+    renderWatch(await watchRequest('', { repository: $('repository').value.trim() }));
+    $('github-status').textContent = 'Reviews start automatically. You can inspect any result while the queue continues.';
+  } catch (error) { $('watch-status').textContent = error.message; }
+  finally { watchLoading = false; updateGitHubControls(); }
 }
 
-function watchRepository() {
-  stopWatching();
-  watchingRepository = $("repository").value.trim();
-  watchStartedAt = Date.now();
-  seenPRs = new Set();
-  newPRNumbers = new Set();
-  inboxPRs = [];
-  renderPRInbox();
-  $("watch-status").textContent = "Checking GitHub for open pull requests…";
-  return pollRepository(watchGeneration, true);
+async function pauseWatching() {
+  watchLoading = true;
+  updateGitHubControls();
+  try { renderWatch(await watchRequest('/pause', {})); }
+  catch (error) { $('watch-status').textContent = error.message; }
+  finally { watchLoading = false; updateGitHubControls(); }
 }
 
-$("repository-form").onsubmit = event => { event.preventDefault(); watchRepository(); };
-$("pull-request-form").onsubmit = event => { event.preventDefault(); loadGitHubPR($("pr-url").value.trim()); };
-$("stop-watching").onclick = () => stopWatching();
-$("input").addEventListener("input", () => {
-  diffEdited = $("input").value !== loadedGitHubDiff;
-  if (diffEdited) $("github-status").textContent = "Diff edited locally. Automatic loading is paused to preserve your edits.";
-});
-window.addEventListener("pagehide", () => stopWatching());
-updateGitHubControls();
+$('repository-form').onsubmit = event => { event.preventDefault(); watchRepository(); };
+$('stop-watching').onclick = pauseWatching;
+$('replay').addEventListener('click', () => { viewGeneration++; selectedReview = displayedReview = null; $('follow-reviews').checked = false; loadedPR = null; renderPRSource(); });
+$('run').addEventListener('click', () => { viewGeneration++; selectedReview = displayedReview = null; $('follow-reviews').checked = false; loadedPR = null; renderPRSource(); });
+window.addEventListener('pagehide', () => { refreshGeneration++; clearTimeout(refreshTimer); });
+window.addEventListener('pageshow', event => { if (event.persisted) refreshWatch(); });
+refreshWatch();

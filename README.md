@@ -21,39 +21,53 @@ python -m agents.runtime fixtures/diffs/demo.diff   # council in the terminal (G
 uvicorn server.app:app --reload                     # web UI at http://localhost:8000 (G4)
 ```
 
-## GitHub repository inbox
+## Automatic PR reviews
 
-Open the local app, enter `owner/repository` or its GitHub URL, then click
-**Connect repository**. Council lists the newest 30 open PRs and checks for new
-ones every two minutes while the page stays open. **Auto-load new diffs** loads
-the newest PR on connection and newly arriving PRs when the review area is idle.
-Click **Load diff** on any listed PR to select it, then **Run council** to review
-it using the provider already configured in `.env` (including Brev).
+1. Open Council locally and expand **Connections**.
+2. Choose **Use team Brev model**, paste the team access key, and click **Save model**.
+   The model name, shared HTTPS URL, and concurrency are filled in for you. Saving
+   checks that the endpoint accepts the key and has the selected model available.
+3. For public repositories, GitHub needs no token. For private repos, save a
+   fine-grained token restricted to those repositories with **Pull requests: Read**
+   permission. **Check repository access** verifies access to the repo you entered.
+4. Enter `owner/repository` and click **Watch and review** once.
 
-Incoming PRs never replace an edited diff or an active/completed debate. They stay
-in the inbox until you select them. Updates to the currently loaded PR are fetched
-automatically while its diff is unedited and no debate has started. **Disconnect**
-stops polling; closing or reloading the page also stops the watch. A PR URL can
-also be loaded directly, including merged PRs for demonstrations.
+Council checks open PRs every two minutes on the server, queues every non-draft PR,
+then reviews one complete PR diff at a time. A changed base/head revision gets a new
+review; unchanged revisions are not repeated. Results, transcripts, the selected
+repository, and queued work survive server restarts in the gitignored `.council/`
+directory. Interrupted reviews are requeued on restart. Run a single server process
+(the default); multiple workers sharing the queue are not supported.
 
-Public repos need no credentials. For private repos or higher GitHub API limits,
-add `GITHUB_TOKEN` to the server's `.env` and restart it. Use a fine-grained token
-limited to the selected repositories with **Pull requests: Read** permission.
-The token stays on the server. GitHub imports are limited to 400 diff lines and
-32 KB to keep inputs manageable for the local model; oversized PRs show an error
-instead of silently truncating the diff. The original Message/TradeoffMap review
-contracts are unchanged.
+Closing the browser does not stop the watch. The Council server must stay running.
+**Pause** lets an active review finish and holds the queue; **Resume reviews** picks
+up where it left off. **Follow live reviews** displays the current debate. **View
+review** lets you inspect an older result while work continues. Failed reviews have
+a **Retry** button. Model failures pause the watch so a broken connection does not
+consume the whole queue. Pause and wait for active work before changing credentials.
 
-GitHub's REST API supplies the PR metadata and unified diff:
-[Pull requests API](https://docs.github.com/en/rest/pulls/pulls).
-This integration reads PRs; automated reviews, push events, and posting results
-back to GitHub can be added as separate steps.
+GitHub reads are paginated up to 1,000 open PRs per check; the app reports when that
+limit is reached. Drafts and closed PRs are skipped. PRs over 400 diff lines or
+32 KB are marked skipped instead of being silently truncated. Reviews are local
+results; this workflow does not post comments or modify GitHub. Pasted diffs and
+**Replay demo** remain available for testing.
 
-Verify the integration:
+Model and GitHub connections save separately, with owner-only file permissions.
+Keys are never returned to the page or stored in browser storage. Model keys are
+kept separate for each provider; changing the model host requires entering that
+endpoint's key. Remote model connections require HTTPS. All app endpoints and
+WebSockets accept only local, same-origin connections, including review controls
+and private transcripts. Keep the server bound to `127.0.0.1`.
+See [Shared Brev setup](docs/shared-brev.md) for teammate configuration.
+
+GitHub API details and token permissions: [GitHub pull requests documentation](https://docs.github.com/en/rest/pulls/pulls).
+
+Verify:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 node tests/test_github_ui.cjs
+node tests/test_settings_ui.cjs
 ```
 
 ## Who owns what

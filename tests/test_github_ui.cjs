@@ -1,116 +1,65 @@
-/* Exercise async watching, edited-input protection, and cancellation without network calls. */
+/* Verify server-owned queue rendering, live following, result selection, and pause. */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-
 class Element {
-  constructor(tag = 'div') {
-    this.tag = tag;
-    this.value = '';
-    this.checked = true;
-    this.children = [];
-    this.listeners = {};
-    this.classList = { add() {} };
-  }
+  constructor(tag = 'div') { this.tag = tag; this.value = ''; this.checked = true; this.children = []; this.listeners = {}; this.classList = { add() {} }; }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = children; }
-  setAttribute(name, value) { this[name] = value; }
   addEventListener(name, callback) { this.listeners[name] = callback; }
-  querySelectorAll(tag) {
-    return this.children.flatMap(child => [
-      ...(child.tag === tag ? [child] : []), ...child.querySelectorAll(tag),
-    ]);
-  }
+  querySelectorAll(tag) { return this.children.flatMap(child => [...(child.tag === tag ? [child] : []), ...child.querySelectorAll(tag)]); }
 }
-
 const ids = new Map();
-const $ = id => {
-  if (!ids.has(id)) ids.set(id, new Element());
-  return ids.get(id);
-};
-const el = (tag, cls, text) => { const result = new Element(tag); result.textContent = text; return result; };
-const timers = new Map();
-let timerId = 0;
-let pulls = [];
-let pendingRepository = null;
-const calls = [];
-const context = vm.createContext({
-  $, el, Set, Date, AbortController, console, HTTP_BASE: '', debateBusy: false, messageCount: 0,
-  window: { addEventListener() {} },
-  setTimeout(fn, delay) { const id = ++timerId; timers.set(id, { fn, delay }); return id; },
-  clearTimeout(id) { timers.delete(id); },
-  reset() { context.messageCount = 0; },
-  renderDiff(diff) { $('diff').textContent = diff; },
+const $ = id => { if (!ids.has(id)) ids.set(id, new Element()); return ids.get(id); };
+const el = (tag, cls, text) => { const element = new Element(tag); element.textContent = text; return element; };
+const timers = new Map(); let timerId = 0;
+let state = { repository: '', enabled: false, active: false, counts: {}, jobs: [], error: '', last_checked: null };
+const pr = { repository: 'o/r', number: 1, title: '<script>not executed</script>', author: 'author', url: 'https://github.com/o/r/pull/1', head_sha: 'a'.repeat(40) };
+const jobs = { one: { id: 'one', pull_request: pr, status: 'running', messages: [{ kind: 'diff', text: 'first diff' }], error: '' },
+  two: { id: 'two', pull_request: { ...pr, number: 2 }, status: 'completed', messages: [{ kind: 'diff', text: 'second diff' }, { kind: 'verdict', text: '{}' }], error: '' } };
+const calls = [], messages = [];
+const context = vm.createContext({ $, el, AbortController, Date, HTTP_BASE: '', debateBusy: false,
+  document: { activeElement: null }, window: { addEventListener() {} },
+  setTimeout(fn, delay) { const id = ++timerId; timers.set(id, { fn, delay }); return id; }, clearTimeout(id) { timers.delete(id); },
+  reset() { messages.length = 0; }, handle(message) { messages.push(message); },
   async fetch(path, options) {
-    const body = JSON.parse(options.body);
-    calls.push({ path, body });
-    if (path.endsWith('/repository')) {
-      if (pendingRepository) return pendingRepository;
-      return { ok: true, json: async () => ({ repository: 'owner/repo', pull_requests: pulls, limit: 30 }) };
-    }
-    const pr = pulls.find(pr => pr.url === body.url);
-    assert(pr, 'Only discovered PRs should be fetched');
-    return { ok: true, json: async () => ({ changed: true, diff: `diff for ${pr.number}`, pull_request: {
-      ...pr, repository: 'owner/repo', state: 'open', head_ref: 'feature', base_ref: 'main',
-      changed_files: 1, additions: 1, deletions: 1,
-    } }) };
+    calls.push({ path, body: options.body ? JSON.parse(options.body) : null });
+    if (path === '/watch' && options.method === 'POST') state = { ...state, repository: 'o/r', enabled: true, counts: { running: 1, completed: 1 }, jobs: Object.values(jobs) };
+    if (path === '/watch/pause') state = { ...state, enabled: false };
+    const data = path.startsWith('/watch/reviews/') ? jobs[path.split('/').at(-1)] : state;
+    return { ok: true, json: async () => data };
   },
 });
 vm.runInContext(fs.readFileSync('web/github.js', 'utf8'), context);
-const pr = (number, createdAt) => ({ number, title: `PR ${number}`, author: 'agent',
-  url: `https://github.com/owner/repo/pull/${number}`, head_sha: 'a'.repeat(40),
-  revision: `base:head-${number}`, created_at: createdAt });
-async function poll() {
-  const entry = [...timers].find(([, timer]) => timer.delay === 120000);
-  assert(entry, 'The watch should schedule another poll');
-  timers.delete(entry[0]);
-  await entry[1].fn();
-}
-
 (async () => {
-  $('repository').value = 'owner/repo';
-  pulls = [pr(1, '2020-01-01T00:00:00Z')];
+  await new Promise(resolve => setImmediate(resolve));
+  $('repository').value = 'o/r';
   await context.watchRepository();
-  assert.equal($('input').value, 'diff for 1', 'Connecting should import the newest PR');
-
-  pulls = [pr(2, new Date(Date.now() + 60000).toISOString()), ...pulls];
-  await poll();
-  assert.equal($('input').value, 'diff for 2', 'A new PR should automatically replace the idle preview');
-  assert.equal($('pr-inbox').querySelectorAll('button').length, 2);
-
-  $('input').value = 'my local edits';
-  $('input').listeners.input();
-  pulls = [pr(3, new Date(Date.now() + 60000).toISOString()), ...pulls];
-  await poll();
-  assert.equal($('input').value, 'my local edits', 'Polling must preserve local edits');
-
-  $('input').value = 'diff for 2';
-  $('input').listeners.input();
-  context.debateBusy = true;
-  context.messageCount = 3;
-  pulls = [pr(4, new Date(Date.now() + 60000).toISOString()), ...pulls];
-  await poll();
-  assert.equal($('input').value, 'diff for 2', 'Polling must preserve the diff associated with a debate');
-  assert.equal(calls.filter(c => c.path.endsWith('/pull-request')).length, 2);
-
-  context.debateBusy = false;
+  assert(calls.some(call => call.path === '/watch' && call.body?.repository === 'o/r'));
+  assert.equal($('run').disabled, true, 'Automatic reviews own the review queue');
+  await context.refreshWatch();
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].text, 'first diff', 'Follow mode displays the running review');
+  jobs.one.messages.push({ kind: 'assessment', text: 'new assessment' });
+  await context.refreshWatch();
+  assert.equal(messages.length, 2, 'Refresh only appends new messages');
+  await context.refreshWatch();
+  assert.equal(messages.length, 2, 'Previously displayed messages are not duplicated');
+  const buttons = $('pr-inbox').querySelectorAll('button');
+  buttons[1].onclick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal($('follow-reviews').checked, false);
+  assert.equal(messages[0].text, 'second diff', 'Completed results can be inspected without starting a review');
+  await context.refreshWatch();
+  assert.equal(messages[0].text, 'second diff', 'Background work preserves the selected result');
+  assert(!calls.some(call => call.path === '/reviews' || call.path.startsWith('/github/')), 'The browser never starts diff reviews itself');
+  context.savedConnections = { provider: 'brev', providers: { brev: { model: 'model', base_url: 'https://model.example.com' } } };
+  const before = calls.length;
   await context.watchRepository();
-  assert.equal($('input').value, 'diff for 2', 'Connecting must preserve a completed debate');
-  context.messageCount = 0;
-  $('input').value = 'another manual diff';
-  $('input').listeners.input();
-  await context.watchRepository();
-  assert.equal($('input').value, 'another manual diff', 'Connecting must preserve manually edited input');
-  $('input').value = 'diff for 2';
-  $('input').listeners.input();
-  let resolveRepository;
-  pendingRepository = new Promise(resolve => { resolveRepository = resolve; });
-  const late = context.watchRepository();
-  context.stopWatching();
-  resolveRepository({ ok: true, json: async () => ({ repository: 'owner/repo', pull_requests: pulls, limit: 30 }) });
-  await late;
-  assert.equal($('pr-inbox').children.length, 0, 'A disconnected watch must ignore its late response');
-  assert.equal([...timers.values()].filter(t => t.delay === 120000).length, 0);
-  assert.equal($('input').value, 'diff for 2');
-  console.log('PASS: connect, new-PR diff import, edited/debating diff preservation, and disconnect cancellation.');
+  assert.equal(calls.length, before, 'Unsaved connection changes must not start reviews with old credentials');
+  assert($('watch-status').textContent.includes('Save your connection changes'));
+  await context.pauseWatching();
+  assert.equal($('watch-repository').textContent, 'Resume reviews');
+  assert.equal($('stop-watching').disabled, true);
+  console.log('PASS: server-owned queue, incremental live view, result selection, and pause.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
